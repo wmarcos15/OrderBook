@@ -25,6 +25,14 @@ TEST_F(OrderBookTest, AddBuyOrder_EmptyBook_RestsAtCorrectPlace) {
     EXPECT_THROW(book_.getBestAsk(), std::runtime_error);
 }
 
+TEST_F(OrderBookTest, AddOrder_QtyOf0_ThrowsInvalidArgumentException) {
+    ASSERT_THROW(book_.addOrder(OrderType::GTC, Side::buy, 98, 0), std::invalid_argument);
+}
+
+TEST_F(OrderBookTest, AddOrder_PriceOf0_ThrowsInvalidArgumentException) {
+    ASSERT_THROW(book_.addOrder(OrderType::GTC, Side::buy, 0, 250), std::invalid_argument);
+}
+
 TEST_F(OrderBookTest, AddSellOrder_EmptyBook_RestsAtCorrectPlace) {
     auto [id, trades] = book_.addOrder(OrderType::GTC, Side::sell, 100, 250);
 
