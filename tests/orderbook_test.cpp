@@ -41,7 +41,7 @@ TEST_F(OrderBookTest, AddSellOrder_EmptyBook_RestsAtCorrectPlace) {
     ASSERT_NE(book_.getBestAsk(), nullptr);
     ASSERT_EQ(book_.getBestAsk()->getID(), id);
     ASSERT_TRUE(trades.empty());
-    EXPECT_THROW(book_.getBestBid(), std::runtime_error);
+    EXPECT_EQ(book_.getBestBid(), nullptr);
 }
 
 TEST_F(OrderBookTest, AddBuyOrder_NonEmptyBuySideEmptySellSide_NewBidIsBestBid) {
