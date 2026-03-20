@@ -86,6 +86,8 @@ bool OrderBook::canFullyFill(OrderPointer order) const {
 OrderResult OrderBook::addOrder(OrderType type, Side side, Price price, Quantity qty) {
     if (qty == 0)
         throw std::invalid_argument("quantity must be greater than zero");
+    if (price <= 0)
+        throw std::invalid_argument("price must be greater than zero");
 
     OrderID id = nextID_++;
     OrderPointer incoming = std::make_shared<Order>(id, type, side, price, qty);
@@ -158,6 +160,8 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
 
     if (newQty == 0) 
         throw std::invalid_argument("quantity must be greater than zero");
+    if (newPrice <= 0) 
+        throw std::invalid_argument("price must be greater than zero");
 
 
     if (newPrice == oldPrice && newQty == oldQty)
