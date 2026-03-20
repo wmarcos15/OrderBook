@@ -153,10 +153,9 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     Price oldPrice = order->getPrice();
     Quantity oldQty = order->getRemainingQuantity();
 
-    if (newQty == 0) {
-        cancelOrder(orderID);
-        return OrderResult({orderID, {}});
-    }
+    if (newQty == 0) 
+        throw std::invalid_argument("quantity must be greater than zero");
+
 
     if (newPrice == oldPrice && newQty == oldQty)
         return OrderResult({orderID, {}});
