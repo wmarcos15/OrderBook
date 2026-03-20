@@ -270,3 +270,185 @@ TEST_F(OrderBookTest, CancelSellOrder_PartiallyFilledAmongOthers_LevelDataReflec
     ASSERT_EQ(book_.getLevelQuantity(Side::sell, 100), 50);
     ASSERT_EQ(book_.getLevelCount(Side::sell, 100), 1);
 }
+
+// --------------------------
+// Modify Order
+// --------------------------
+TEST_F(OrderBookTest, ModifyOrder_DoesNotExist_ReturnsNullOpt) {
+    auto result = book_.modifyOrder(1, 20, 20);
+    ASSERT_EQ(result, std::nullopt);
+} 
+
+TEST_F(OrderBookTest, ModifyOrder_SamePriceSameQty_ReturnsSameIDNoTrades) {
+    Price price {98};
+    Quantity qty {250};
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, price, qty);
+    auto [returnID, trades] = *book_.modifyOrder(id, price, qty);
+    ASSERT_EQ(id, returnID);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(OrderBookTest, ModifyOrder_ModifyOrderTo0Qty_ThrowsInvalidArgument) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 100);
+    ASSERT_THROW(book_.modifyOrder(id, 98, 0), std::invalid_argument);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_ModifyOrderTo0Price_ThrowsInvalidArgument) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 100);
+    ASSERT_THROW(book_.modifyOrder(id, 0, 100), std::invalid_argument);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_FriendlyModify_ReturnsSameID) {
+    Price price {98};
+    Quantity qty1 {250};
+    Quantity qty2 {100};
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, price, qty1);
+    auto [returnID, trades] = *book_.modifyOrder(id, price, qty2);
+    ASSERT_EQ(id, returnID);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_FriendlyModify_ReturnsNoTrades) {
+    Price price {98};
+    Quantity qty1 {250};
+    Quantity qty2 {100};
+    auto [id, _2] = book_.addOrder(OrderType::GTC, Side::buy, price, qty1);
+    auto [_, trades] = *book_.modifyOrder(id, price, qty2);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(OrderBookTest, ModifyOrder_FriendlyModify_OrderStillAtBook) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 250);
+    book_.modifyOrder(id, 98, 100);
+    ASSERT_EQ(book_.size(), 1);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_FriendlyModify_OrderHasNewQty) {
+    Quantity newQty {100};
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 250);
+    book_.modifyOrder(id, 98, newQty);
+    ASSERT_EQ(book_.getOrder(id)->getRemainingQuantity(), newQty);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_FriendlyModify_OrderPreservesPriority) {
+    Quantity newQty {100};
+    auto [id, _1] = book_.addOrder(OrderType::GTC, Side::buy, 98, 250);
+    auto [noPriorityId, _2] = book_.addOrder(OrderType::GTC, Side::buy, 98, 75);
+    book_.modifyOrder(id, 98, newQty);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), id);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_PriceChange_NewIDReturned) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 100);
+    auto result = book_.modifyOrder(id, 99, 100);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_PriceChange_OldOrderGone) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 100);
+    auto result = book_.modifyOrder(id, 99, 100);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_PriceChange_NewOrderResting) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 100);
+    auto result = book_.modifyOrder(id, 99, 100);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), result->orderID);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_PriceChange_LoosesTimePriority) {
+    auto [id1, _1] = book_.addOrder(OrderType::GTC, Side::buy, 99, 100);
+    auto [id2, _2] = book_.addOrder(OrderType::GTC, Side::buy, 99, 100);
+    auto result = book_.modifyOrder(id1, 99, 150);
+    ASSERT_EQ(book_.getBestBid()->getID(), id2);
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_PriceChange_NewIDReturned) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::sell, 101, 100);
+    auto result = book_.modifyOrder(id, 102, 100);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_PriceChange_OldOrderGone) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::sell, 101, 100);
+    auto result = book_.modifyOrder(id, 102, 100);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_PriceChange_NewOrderResting) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::sell, 101, 100);
+    auto result = book_.modifyOrder(id, 102, 100);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getID(), result->orderID);
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_PriceChange_LoosesTimePriority) {
+    auto [id1, _1] = book_.addOrder(OrderType::GTC, Side::sell, 99, 100);
+    auto [id2, _2] = book_.addOrder(OrderType::GTC, Side::sell, 99, 100);
+    auto result = book_.modifyOrder(id1, 99, 150);
+    ASSERT_EQ(book_.getBestAsk()->getID(), id2);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_QuantityIncrease_NewIDReturned) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 99, 100);
+    auto result = book_.modifyOrder(id, 99, 150);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_QuantityIncrease_LoosesTimePriority) {
+    auto [id1, _1] = book_.addOrder(OrderType::GTC, Side::buy, 99, 100);
+    auto [id2, _2] = book_.addOrder(OrderType::GTC, Side::buy, 99, 100);
+    auto result = book_.modifyOrder(id1, 99, 150);
+    ASSERT_EQ(book_.getBestBid()->getID(), id2);
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_QuantityIncrease_NewIDReturned) {
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::sell, 101, 100);
+    auto result = book_.modifyOrder(id, 101, 150);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_QuantityIncrease_LoosesTimePriority) {
+    auto [id1, _1] = book_.addOrder(OrderType::GTC, Side::sell, 101, 100);
+    auto [id2, _2] = book_.addOrder(OrderType::GTC, Side::sell, 101, 100);
+    auto result = book_.modifyOrder(id1, 101, 150);
+    ASSERT_EQ(book_.getBestAsk()->getID(), id2);
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_PriceChangeCrossesSpread_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 98, 100);
+    auto result = book_.modifyOrder(id, 100, 100);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->trades.empty());
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_PriceChangeCrossesSpread_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::sell, 102, 100);
+    auto result = book_.modifyOrder(id, 100, 100);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->trades.empty());
+}
+
+TEST_F(OrderBookTest, ModifyBuyOrder_QuantityIncreaseCrossesSpread_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::sell, 101, 200);
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::buy, 99, 50);
+    auto result = book_.modifyOrder(id, 101, 200);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->trades.empty());
+}
+
+TEST_F(OrderBookTest, ModifySellOrder_QuantityIncreaseCrossesSpread_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::buy, 99, 200);
+    auto [id, _] = book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
+    auto result = book_.modifyOrder(id, 99, 200);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->trades.empty());
+}
+
