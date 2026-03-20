@@ -14,14 +14,14 @@ std::size_t OrderBook::size() const {
     return orders_.size();
 }
 
-const Order& OrderBook::getBestBid() const {
-    if (bids_.empty()) throw std::runtime_error("empty bid side");
-    return *bids_.begin()->second.front();
+const Order* OrderBook::getBestBid() const {
+     if (bids_.empty()) return nullptr;
+    return bids_.begin()->second.front().get();
 }
 
-const Order& OrderBook::getBestAsk() const {
-    if (asks_.empty()) throw std::runtime_error("empty ask side");
-    return *asks_.begin()->second.front();
+const Order* OrderBook::getBestAsk() const {
+     if (asks_.empty()) return nullptr;
+    return asks_.begin()->second.front().get();
 }
 
 bool OrderBook::empty() const {

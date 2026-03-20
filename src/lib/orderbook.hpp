@@ -65,8 +65,8 @@ class OrderBook {
 
     public:
         std::size_t size() const; // total order count
-        const Order& getBestBid() const;
-        const Order& getBestAsk() const;
+        const Order* getBestBid() const;
+        const Order* getBestAsk() const;
         bool empty() const;
         const Order* getOrder(OrderID id) const;
         Quantity getLevelQuantity(Side side, Price price) const;

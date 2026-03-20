@@ -20,9 +20,9 @@ TEST_F(OrderBookTest, AddBuyOrder_EmptyBook_RestsAtCorrectPlace) {
 
     ASSERT_FALSE(book_.empty());
     ASSERT_EQ(book_.size(), 1);
-    ASSERT_EQ(book_.getBestBid().getID(), id);
+    ASSERT_EQ(book_.getBestBid()->getID(), id);
     ASSERT_TRUE(trades.empty());
-    EXPECT_THROW(book_.getBestAsk(), std::runtime_error);
+    EXPECT_EQ(book_.getBestAsk(), nullptr);
 }
 
 TEST_F(OrderBookTest, AddOrder_QtyOf0_ThrowsInvalidArgumentException) {
@@ -38,7 +38,8 @@ TEST_F(OrderBookTest, AddSellOrder_EmptyBook_RestsAtCorrectPlace) {
 
     ASSERT_FALSE(book_.empty());
     ASSERT_EQ(book_.size(), 1);
-    ASSERT_EQ(book_.getBestAsk().getID(), id);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getID(), id);
     ASSERT_TRUE(trades.empty());
     EXPECT_THROW(book_.getBestBid(), std::runtime_error);
 }
@@ -47,7 +48,8 @@ TEST_F(OrderBookTest, AddBuyOrder_NonEmptyBuySideEmptySellSide_NewBidIsBestBid) 
     book_.addOrder(OrderType::GTC, Side::buy, 99, 50);
     auto [id, trades] = book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
 
-    ASSERT_EQ(book_.getBestBid().getID(), id);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), id);
     ASSERT_TRUE(trades.empty());
 }
 
@@ -55,7 +57,8 @@ TEST_F(OrderBookTest, AddSellOrder_NonEmptySellSideEmptyBuySide_NewAskIsBestAsk)
     book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
     auto [id, trades] = book_.addOrder(OrderType::GTC, Side::sell, 99, 50);
 
-    ASSERT_EQ(book_.getBestAsk().getID(), id);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getID(), id);
     ASSERT_TRUE(trades.empty());
 }
 
@@ -63,14 +66,16 @@ TEST_F(OrderBookTest, AddBuyOrder_NonEmptyBuySideEmptySellSide_NewBidIsNotBestBi
     auto [oldID, _1] = book_.addOrder(OrderType::GTC, Side::buy, 101, 50);
     auto [newID, _2] = book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
 
-    ASSERT_EQ(book_.getBestBid().getID(), oldID);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), oldID);
 }
 
 TEST_F(OrderBookTest, AddSellOrder_NonEmptySellSideEmptyBuySide_NewAskIsNotBestAsk) {
     auto [oldID, _1] = book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
     auto [newID, _2] = book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
 
-    ASSERT_EQ(book_.getBestAsk().getID(), oldID);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getID(), oldID);
 }
 
 TEST_F(OrderBookTest, AddBuyOrder_NonEmptyBook_NoMatch) {
@@ -79,7 +84,8 @@ TEST_F(OrderBookTest, AddBuyOrder_NonEmptyBook_NoMatch) {
     auto [bidID2, trades] = book_.addOrder(OrderType::GTC, Side::buy, 99, 50);
 
     ASSERT_EQ(book_.size(), 3);
-    ASSERT_EQ(book_.getBestBid().getID(), bidID2);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), bidID2);
     ASSERT_TRUE(trades.empty());
 }
 
@@ -89,20 +95,23 @@ TEST_F(OrderBookTest, AddSellOrder_NonEmptyBook_NoMatch) {
     auto [askID2, trades] = book_.addOrder(OrderType::GTC, Side::sell, 99, 50);
 
     ASSERT_EQ(book_.size(), 3);
-    ASSERT_EQ(book_.getBestBid().getID(), bidID);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), bidID);
     ASSERT_TRUE(trades.empty());
 }
 
 TEST_F(OrderBookTest, AddBuyOrder_SamePriceTwoOrders_FirstAddedIsBestBid) {
     auto [oldID, _] = book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
     book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
-    ASSERT_EQ(book_.getBestBid().getID(), oldID);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), oldID);
 }
 
 TEST_F(OrderBookTest, AddSellOrder_SamePriceTwoOrders_FirstAddedIsBestAsk) {
     auto [oldID, _] = book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
     book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
-    ASSERT_EQ(book_.getBestAsk().getID(), oldID);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getID(), oldID);
 }
 
 TEST_F(OrderBookTest, AddBuyOrder_EmptyBook_LevelDataCorrect) {
@@ -162,14 +171,16 @@ TEST_F(OrderBookTest, CancelBestBid_ManyOrders_NewBestBid) {
     auto [id, _1] = book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
     auto [cancelID, _2] = book_.addOrder(OrderType::GTC, Side::buy, 105, 200);
     book_.cancelOrder(cancelID);
-    ASSERT_EQ(book_.getBestBid().getID(), id);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getID(), id);
 }
 
 TEST_F(OrderBookTest, CancelBestAsk_ManyOrders_NewBestAsk) {
     auto [id, _1] = book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
     auto [cancelID, _2] = book_.addOrder(OrderType::GTC, Side::sell, 105, 200);
     book_.cancelOrder(cancelID);
-    ASSERT_EQ(book_.getBestAsk().getID(), id);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getID(), id);
 }
 
 TEST_F(OrderBookTest, CancelBid_LastPrice_BestBidHasOtherPrice){
@@ -177,7 +188,8 @@ TEST_F(OrderBookTest, CancelBid_LastPrice_BestBidHasOtherPrice){
     auto [cancelID, _] = book_.addOrder(OrderType::GTC, Side::buy, 100, 200);
     book_.addOrder(OrderType::GTC, Side::buy, price, 150);
     book_.cancelOrder(cancelID);
-    ASSERT_EQ(book_.getBestBid().getPrice(), price);
+    ASSERT_NE(book_.getBestBid(), nullptr);
+    ASSERT_EQ(book_.getBestBid()->getPrice(), price);
 }
 
 TEST_F(OrderBookTest, CancelAsk_LastPrice_BestAskHasOtherPrice){
@@ -185,7 +197,8 @@ TEST_F(OrderBookTest, CancelAsk_LastPrice_BestAskHasOtherPrice){
     auto [cancelID, _] = book_.addOrder(OrderType::GTC, Side::sell, 90, 200);
     book_.addOrder(OrderType::GTC, Side::sell, price, 150);
     book_.cancelOrder(cancelID);
-    ASSERT_EQ(book_.getBestAsk().getPrice(), price);
+    ASSERT_NE(book_.getBestAsk(), nullptr);
+    ASSERT_EQ(book_.getBestAsk()->getPrice(), price);
 }
 
 TEST_F(OrderBookTest, CancelBuyOrder_ManyOrdersAtLevel_LevelDataUpdated) {
