@@ -15,12 +15,12 @@ std::size_t OrderBook::size() const {
 }
 
 const Order* OrderBook::getBestBid() const {
-     if (bids_.empty()) return nullptr;
+    if (bids_.empty()) return nullptr;
     return bids_.begin()->second.front().get();
 }
 
 const Order* OrderBook::getBestAsk() const {
-     if (asks_.empty()) return nullptr;
+    if (asks_.empty()) return nullptr;
     return asks_.begin()->second.front().get();
 }
 
