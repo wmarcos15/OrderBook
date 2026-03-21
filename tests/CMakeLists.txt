@@ -1,5 +1,6 @@
 add_executable(orderbook_tests
     orderbook_test.cpp
+    matching_test.cpp
 )
 
 target_link_libraries(orderbook_tests
