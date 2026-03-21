@@ -119,6 +119,18 @@ OrderResult OrderBook::addOrder(OrderType type, Side side, Price price, Quantity
     return {incoming->getID(), trades};
 }
 
+OrderResult OrderBook::addMarketOrder(Side side, Quantity qty) {
+    Price price;
+    if (side == Side::buy) {
+        if (asks_.empty()) return {nextID_++, {}};
+        price = asks_.rbegin()->first;
+    } else {
+        if (bids_.empty()) return {nextID_++, {}};
+        price = (bids_.rbegin())->first;
+    }
+    return addOrder(OrderType::IOC, side, price, qty);
+}
+
 void OrderBook::cancelOrder(OrderID orderID) {
     auto it = findOrder(orderID);
     if (it == orders_.end()) return;

@@ -73,6 +73,7 @@ class OrderBook {
         std::size_t getLevelCount(Side side, Price price) const;
 
         OrderResult addOrder(OrderType type, Side side, Price price, Quantity qty);
+        OrderResult addMarketOrder(Side side, Quantity qty);
         void cancelOrder(OrderID orderID);
         std::optional<OrderResult> modifyOrder(OrderID orderID, Price newPrice, Quantity newQty);
         void printState();
