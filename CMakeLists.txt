@@ -22,3 +22,5 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 add_subdirectory(tests)
+
+add_subdirectory(benchmarks)

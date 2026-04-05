@@ -11,3 +11,5 @@
 !src/**
 !tests/
 !tests/**
+!benchmarks/
+!benchmarks/**
