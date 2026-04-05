@@ -21,5 +21,6 @@ struct Stats {
     long long max;
 };
 
-BenchmarkResult measure(const std::string& name, uint64_t warmup, uint64_t iterations, std::function<void()> fn);
+BenchmarkResult measureThroughput(const std::string& name, uint64_t warmup, uint64_t iterations, std::function<void()> fn);
+BenchmarkResult measureLatency(const std::string& name, uint64_t warmup, uint64_t iterations, std::function<void()> fn);
 void printResult(const BenchmarkResult& result);

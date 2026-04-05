@@ -22,7 +22,10 @@ Stats computeStats(const BenchmarkResult& result) {
     return stats;
 }
 
-void measureThroughput(uint64_t warmup, uint64_t iterations, std::function<void()> fn, BenchmarkResult& result) {
+BenchmarkResult measureThroughput(const std::string name, uint64_t warmup, uint64_t iterations, std::function<void()> fn) {
+    BenchmarkResult result;
+    result.scenarioName = name;
+
     for (uint64_t i {0}; i < warmup; ++i) fn();
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -36,9 +39,15 @@ void measureThroughput(uint64_t warmup, uint64_t iterations, std::function<void(
     result.ops = iterations;
     result.totalDurationNs = ns;
     result.opsPerSec = opsPerSec;
+
+    return result;
 }
 
-void measureLatency(uint64_t warmup, uint64_t iterations, std::function<void()> fn, BenchmarkResult& result) {
+BenchmarkResult measureLatency(const std::string name, uint64_t warmup, uint64_t iterations, std::function<void()> fn) {
+    BenchmarkResult result;
+    result.scenarioName = name;
+    result.rawLatencies.reserve(iterations);
+
     for (uint64_t i {0}; i < warmup; ++i) fn();
 
     for (uint64_t i {0}; i < iterations; ++i) {
@@ -48,14 +57,7 @@ void measureLatency(uint64_t warmup, uint64_t iterations, std::function<void()> 
         long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
         result.rawLatencies.push_back(ns);
     }
-}
 
-BenchmarkResult measure(const std::string& name, uint64_t warmup, uint64_t iterations, std::function<void()> fn) {
-    BenchmarkResult result;
-    result.scenarioName = name;
-    result.rawLatencies.reserve(iterations);
-    measureThroughput(warmup, iterations, fn, result);
-    measureLatency(warmup, iterations, fn, result);
     return result;
 }
 
