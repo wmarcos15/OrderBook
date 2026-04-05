@@ -62,8 +62,8 @@ BenchmarkResult measureLatency(const std::string& name, uint64_t warmup, uint64_
 }
 
 void printResult(const BenchmarkResult& result) {
+    std::cout << "=== " << result.scenarioName << " ===" << std::endl;
     if (result.rawLatencies.empty()) {
-        std::cout << "=== " << result.scenarioName << " ===" << std::endl;
         std::cout << "Throughput" << std::endl;
         std::cout << "\tops:\t\t" << result.ops << std::endl;
         std::cout << "\tduration:\t" << result.totalDurationNs / 1'000'000 << " ms" << std::endl;
