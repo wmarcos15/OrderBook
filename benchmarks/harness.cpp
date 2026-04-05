@@ -22,7 +22,7 @@ Stats computeStats(const BenchmarkResult& result) {
     return stats;
 }
 
-BenchmarkResult measureThroughput(const std::string name, uint64_t warmup, uint64_t iterations, std::function<void()> fn) {
+BenchmarkResult measureThroughput(const std::string& name, uint64_t warmup, uint64_t iterations, std::function<void()> fn) {
     BenchmarkResult result;
     result.scenarioName = name;
 
