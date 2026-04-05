@@ -257,3 +257,150 @@ TEST_F(MatchingTest, GTC_TradeStruct_QuantityCorrectOnPartialFill) {
     ASSERT_EQ(trades[0].quantity, 30);
 }
 
+
+// --------------------------
+// FOK
+// --------------------------
+TEST_F(MatchingTest, FOK_BidCanFullyFill_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 150);
+    auto [_, trades] = book_.addOrder(OrderType::GTC, Side::buy, 100, 150);
+    ASSERT_FALSE(trades.empty());
+}
+
+TEST_F(MatchingTest, FOK_AskCanFullyFill_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 150);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::sell, 100, 150);
+    ASSERT_FALSE(trades.empty());
+}
+
+TEST_F(MatchingTest, FOK_BidCannotFullyFill_NoChangesInBook) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 98, 50);
+
+    std::size_t sizeBefore = book_.size();
+    Price bestBidBefore = book_.getBestBid()->getPrice();
+    Price bestAskBefore = book_.getBestAsk()->getPrice();
+    Quantity bidQtyBefore = book_.getLevelQuantity(Side::buy, 98);
+    Quantity askQtyBefore = book_.getLevelQuantity(Side::sell, 100);
+
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::buy, 100, 200);
+
+    ASSERT_EQ(book_.size(), sizeBefore);
+    ASSERT_EQ(book_.getBestBid()->getPrice(), bestBidBefore);
+    ASSERT_EQ(book_.getBestAsk()->getPrice(), bestAskBefore);
+    ASSERT_EQ(book_.getLevelQuantity(Side::buy, 98), bidQtyBefore);
+    ASSERT_EQ(book_.getLevelQuantity(Side::sell, 100), askQtyBefore);
+}
+
+TEST_F(MatchingTest, FOK_BidCannotFullyFill_NoTrades) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 98, 50);
+
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::buy, 100, 200);
+
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(MatchingTest, FOK_AskCannotFullyFill_NoChangesInBook) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    std::size_t sizeBefore = book_.size();
+    Price bestBidBefore = book_.getBestBid()->getPrice();
+    Price bestAskBefore = book_.getBestAsk()->getPrice();
+    Quantity bidQtyBefore = book_.getLevelQuantity(Side::buy, 100);
+    Quantity askQtyBefore = book_.getLevelQuantity(Side::sell, 102);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::sell, 100, 200);
+    ASSERT_EQ(book_.size(), sizeBefore);
+    ASSERT_EQ(book_.getBestBid()->getPrice(), bestBidBefore);
+    ASSERT_EQ(book_.getBestAsk()->getPrice(), bestAskBefore);
+    ASSERT_EQ(book_.getLevelQuantity(Side::buy, 100), bidQtyBefore);
+    ASSERT_EQ(book_.getLevelQuantity(Side::sell, 102), askQtyBefore);
+}
+
+TEST_F(MatchingTest, FOK_AskCannotFullyFill_NoTrades) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::sell, 100, 200);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(MatchingTest, FOK_BidExactLiquidity_FullyFilled) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::buy, 100, 50);
+    ASSERT_EQ(trades.size(), 1);
+    ASSERT_EQ(trades[0].quantity, 50);
+    ASSERT_EQ(book_.getBestAsk(), nullptr);
+}
+
+TEST_F(MatchingTest, FOK_AskExactLiquidity_FullyFilled) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::sell, 100, 50);
+    ASSERT_EQ(trades.size(), 1);
+    ASSERT_EQ(trades[0].quantity, 50);
+    ASSERT_EQ(book_.getBestBid(), nullptr);
+}
+
+TEST_F(MatchingTest, FOK_BidMultiLevel_SufficientLiquidity_FullyFilled) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::buy, 102, 150);
+    ASSERT_EQ(trades.size(), 3);
+    ASSERT_EQ(book_.getBestAsk(), nullptr);
+}
+
+TEST_F(MatchingTest, FOK_AskMultiLevel_SufficientLiquidity_FullyFilled) {
+    book_.addOrder(OrderType::GTC, Side::buy, 102, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::sell, 100, 150);
+    ASSERT_EQ(trades.size(), 3);
+    ASSERT_EQ(book_.getBestBid(), nullptr);
+}
+
+TEST_F(MatchingTest, FOK_BidMultiLevel_InsufficientLiquidity_NoTrades) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::buy, 102, 200);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(MatchingTest, FOK_BidMultiLevel_InsufficientLiquidity_BookUnchanged) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    std::size_t sizeBefore = book_.size();
+    Quantity l1Before = book_.getLevelQuantity(Side::sell, 100);
+    Quantity l2Before = book_.getLevelQuantity(Side::sell, 101);
+    Quantity l3Before = book_.getLevelQuantity(Side::sell, 102);
+    book_.addOrder(OrderType::FOK, Side::buy, 102, 200);
+    ASSERT_EQ(book_.size(), sizeBefore);
+    ASSERT_EQ(book_.getLevelQuantity(Side::sell, 100), l1Before);
+    ASSERT_EQ(book_.getLevelQuantity(Side::sell, 101), l2Before);
+    ASSERT_EQ(book_.getLevelQuantity(Side::sell, 102), l3Before);
+}
+
+TEST_F(MatchingTest, FOK_AskMultiLevel_InsufficientLiquidity_NoTrades) {
+    book_.addOrder(OrderType::GTC, Side::buy, 102, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [_, trades] = book_.addOrder(OrderType::FOK, Side::sell, 100, 200);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(MatchingTest, FOK_AskMultiLevel_InsufficientLiquidity_BookUnchanged) {
+    book_.addOrder(OrderType::GTC, Side::buy, 102, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    std::size_t sizeBefore = book_.size();
+    Quantity l1Before = book_.getLevelQuantity(Side::buy, 102);
+    Quantity l2Before = book_.getLevelQuantity(Side::buy, 101);
+    Quantity l3Before = book_.getLevelQuantity(Side::buy, 100);
+    book_.addOrder(OrderType::FOK, Side::sell, 100, 200);
+    ASSERT_EQ(book_.size(), sizeBefore);
+    ASSERT_EQ(book_.getLevelQuantity(Side::buy, 102), l1Before);
+    ASSERT_EQ(book_.getLevelQuantity(Side::buy, 101), l2Before);
+    ASSERT_EQ(book_.getLevelQuantity(Side::buy, 100), l3Before);
+}
+
