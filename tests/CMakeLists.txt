@@ -11,7 +11,6 @@ target_link_libraries(orderbook_tests
 
 target_include_directories(orderbook_tests
     PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/lib
 )
 
 include(GoogleTest)
