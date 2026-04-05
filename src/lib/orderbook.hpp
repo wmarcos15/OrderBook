@@ -76,6 +76,5 @@ class OrderBook {
         OrderResult addMarketOrder(Side side, Quantity qty);
         void cancelOrder(OrderID orderID);
         std::optional<OrderResult> modifyOrder(OrderID orderID, Price newPrice, Quantity newQty);
-        void printState();
 
 };
