@@ -522,3 +522,117 @@ TEST_F(MatchingTest, IOC_AskMultiLevel_PartialFill_ResidualDiscarded) {
     ASSERT_EQ(book_.getOrder(id), nullptr);
     ASSERT_EQ(book_.getBestBid()->getPrice(), 100);
 }
+
+// --------------------------
+// Market Order
+// --------------------------
+TEST_F(MatchingTest, Market_BidFullyFilled_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    auto [_, trades] = book_.addMarketOrder(Side::buy, 50);
+    ASSERT_EQ(trades.size(), 1);
+    ASSERT_EQ(trades[0].quantity, 50);
+}
+
+TEST_F(MatchingTest, Market_BidFullyFilled_NothingRests) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    auto [id, _] = book_.addMarketOrder(Side::buy, 50);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+    ASSERT_TRUE(book_.empty());
+}
+
+TEST_F(MatchingTest, Market_AskFullyFilled_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [_, trades] = book_.addMarketOrder(Side::sell, 50);
+    ASSERT_EQ(trades.size(), 1);
+    ASSERT_EQ(trades[0].quantity, 50);
+}
+
+TEST_F(MatchingTest, Market_AskFullyFilled_NothingRests) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [id, _] = book_.addMarketOrder(Side::sell, 50);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+    ASSERT_TRUE(book_.empty());
+}
+
+TEST_F(MatchingTest, Market_BidEmptyAskSide_NoTrades) {
+    auto [_, trades] = book_.addMarketOrder(Side::buy, 50);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(MatchingTest, Market_BidEmptyAskSide_NothingRests) {
+    auto [id, _] = book_.addMarketOrder(Side::buy, 50);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+    ASSERT_TRUE(book_.empty());
+}
+
+TEST_F(MatchingTest, Market_AskEmptyBidSide_NoTrades) {
+    auto [_, trades] = book_.addMarketOrder(Side::sell, 50);
+    ASSERT_TRUE(trades.empty());
+}
+
+TEST_F(MatchingTest, Market_AskEmptyBidSide_NothingRests) {
+    auto [id, _] = book_.addMarketOrder(Side::sell, 50);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+    ASSERT_TRUE(book_.empty());
+}
+
+TEST_F(MatchingTest, Market_BidPartialFill_TradeCorrectQty) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 30);
+    auto [_, trades] = book_.addMarketOrder(Side::buy, 100);
+    ASSERT_EQ(trades.size(), 1);
+    ASSERT_EQ(trades[0].quantity, 30);
+}
+
+TEST_F(MatchingTest, Market_BidPartialFill_ResidualDiscarded) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 30);
+    auto [id, _] = book_.addMarketOrder(Side::buy, 100);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+    ASSERT_EQ(book_.getBestAsk(), nullptr);
+}
+
+TEST_F(MatchingTest, Market_AskPartialFill_TradeCorrectQty) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 30);
+    auto [_, trades] = book_.addMarketOrder(Side::sell, 100);
+    ASSERT_EQ(trades.size(), 1);
+    ASSERT_EQ(trades[0].quantity, 30);
+}
+
+TEST_F(MatchingTest, Market_AskPartialFill_ResidualDiscarded) {
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 30);
+    auto [id, _] = book_.addMarketOrder(Side::sell, 100);
+    ASSERT_EQ(book_.getOrder(id), nullptr);
+    ASSERT_EQ(book_.getBestBid(), nullptr);
+}
+
+TEST_F(MatchingTest, Market_BidSweepsMultipleLevels_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    auto [_, trades] = book_.addMarketOrder(Side::buy, 150);
+    ASSERT_EQ(trades.size(), 3);
+}
+
+TEST_F(MatchingTest, Market_BidSweepsMultipleLevels_AllAsksConsumed) {
+    book_.addOrder(OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::sell, 102, 50);
+    book_.addMarketOrder(Side::buy, 150);
+    ASSERT_EQ(book_.getBestAsk(), nullptr);
+}
+
+TEST_F(MatchingTest, Market_AskSweepsMultipleLevels_TradesGenerated) {
+    book_.addOrder(OrderType::GTC, Side::buy, 102, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    auto [_, trades] = book_.addMarketOrder(Side::sell, 150);
+    ASSERT_EQ(trades.size(), 3);
+}
+
+TEST_F(MatchingTest, Market_AskSweepsMultipleLevels_AllBidsConsumed) {
+    book_.addOrder(OrderType::GTC, Side::buy, 102, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 101, 50);
+    book_.addOrder(OrderType::GTC, Side::buy, 100, 50);
+    book_.addMarketOrder(Side::sell, 150);
+    ASSERT_EQ(book_.getBestBid(), nullptr);
+}
+
