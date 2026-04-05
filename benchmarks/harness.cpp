@@ -62,18 +62,20 @@ BenchmarkResult measureLatency(const std::string name, uint64_t warmup, uint64_t
 }
 
 void printResult(const BenchmarkResult& result) {
-    Stats stats = computeStats(result);
     std::cout << "=== " << result.scenarioName << " ===\n";
     std::cout << "Throughput\n";
     std::cout << "\tops:\t\t" << result.ops << "\n";
     std::cout << "\tduration:\t" << result.totalDurationNs / 1'000'000 << " ms\n";
     std::cout << "\tops/sec:\t" << static_cast<uint64_t>(result.opsPerSec) << "\n";
-    std::cout << "Latency (ns)\n";
-    std::cout << "\tmin:\t" << stats.min << "\n";
-    std::cout << "\tp50:\t" << stats.p50 << "\n";
-    std::cout << "\tp95:\t" << stats.p95 << "\n";
-    std::cout << "\tp99:\t" << stats.p99 << "\n";
-    std::cout << "\tp99.9:\t" << stats.p999 << "\n";
-    std::cout << "\tmax:\t" << stats.max << "\n";
+    if (!result.rawLatencies.empty()) {
+        Stats stats = computeStats(result);
+        std::cout << "Latency (ns)\n";
+        std::cout << "\tmin:\t" << stats.min << "\n";
+        std::cout << "\tp50:\t" << stats.p50 << "\n";
+        std::cout << "\tp95:\t" << stats.p95 << "\n";
+        std::cout << "\tp99:\t" << stats.p99 << "\n";
+        std::cout << "\tp99.9:\t" << stats.p999 << "\n";
+        std::cout << "\tmax:\t" << stats.max << "\n";
+    }
 }
 
