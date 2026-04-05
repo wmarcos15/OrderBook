@@ -1,4 +1,3 @@
-#pragma once
 #include "trade.hpp"
 #include <stdlib.h>
 #include <iostream>
