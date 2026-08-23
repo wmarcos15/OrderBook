@@ -1,4 +1,5 @@
 #include "scenarios/addorder.hpp"
+#include "scenarios/cancelorder.hpp"
 #include <iostream>
 #include <string>
 #include <functional>
@@ -22,6 +23,10 @@ int main(int argc, char* argv[]) {
     const std::unordered_map<std::string, std::function<void()>> scenarios = {
         {SCENARIO_ADDORDER_THROUGHPUT, [&]() {benchmarkAddOrderThroughput(SEED);}},
         {SCENARIO_ADDORDER_LATENCY, [&]() {benchmarkAddOrderLatency(SEED);}},
+        {SCENARIO_CANCELORDER_HIT_THROUGHPUT, [&]() {benchmarkCancelOrderHitThroughput(SEED);}},
+        {SCENARIO_CANCELORDER_MISS_THROUGHPUT, [&]() {benchmarkCancelOrderMissThroughput(SEED);}},
+        {SCENARIO_CANCELORDER_HIT_LATENCY, [&]() {benchmarkCancelOrderHitLatency(SEED);}},
+        {SCENARIO_CANCELORDER_MISS_LATENCY, [&]() {benchmarkCancelOrderMissLatency(SEED);}},
     };
 
     if (scenario == "help" || scenario == "--help" || scenario == "-h") {
