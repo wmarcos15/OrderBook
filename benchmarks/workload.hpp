@@ -1,16 +1,16 @@
 #pragma once
+#include "types.hpp"
 #include <cstdint>
 #include <vector>
-#include "types.hpp"
 
 struct OrderSpec {
-    bool isMarket;
+    bool      isMarket;
     OrderType type;
-    Price price;
-    Quantity qty;
-    Side side;
+    Price     price;
+    Quantity  qty;
+    Side      side;
 };
 
-typedef std::vector<OrderSpec> OrderSpecs;
+using OrderSpecs = std::vector<OrderSpec>;
 
-OrderSpecs generateWorkload(uint32_t count, uint32_t seed);
+OrderSpecs generateWorkload(uint64_t count, uint32_t seed);

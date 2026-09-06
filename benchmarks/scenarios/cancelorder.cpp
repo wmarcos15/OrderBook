@@ -1,57 +1,56 @@
-#include "cancelorder.hpp"
-#include "orderbook.hpp"
-#include "../harness.hpp"
 #include "../workload.hpp"
-#include "types.hpp"
-#include <vector>
+#include "orderbook.hpp"
+#include <benchmark/benchmark.h>
+#include <cstddef>
 
-constexpr double WARMUP_PERCENTAGE = 0.05;
+static void BM_CancelOrderMiss(benchmark::State& state) {
+    OrderBook book;
+    OrderID id {0};
+    
+    // We change the ID so that the compiler doesn't inline the loop.
+    // It cannot be optmized because cancelOrder() returns void.
+    for (auto _ : state) {
+        benchmark::DoNotOptimize(id);
+        book.cancelOrder(id++);
+        benchmark::ClobberMemory();
+    }
+}
 
-void benchmarkCancelOrderHitThroughput(uint32_t seed) {
-    constexpr uint64_t iterations = 1'000'000;
-    constexpr uint64_t warmup = static_cast<uint64_t>(iterations * WARMUP_PERCENTAGE);
+static void BM_CancelOrderHit(benchmark::State& state) {
+    constexpr uint64_t WORKLOAD_SIZE = 2'000'000;
+    constexpr uint32_t SEED = 42;
+    OrderSpecs workload = generateWorkload(WORKLOAD_SIZE, SEED);
 
     OrderBook book;
-    OrderSpecs workload = generateWorkload(iterations + warmup, seed);
 
-    // Populate the book and get the IDs
-    std::vector<OrderID> warmupIDs;
-    std::vector<OrderID> measureIDs;
-    warmupIDs.reserve(warmup);
-    measureIDs.reserve(iterations);
-    for (size_t i {0}; i < warmup + iterations; ++i) {
-        // Same side and type so that we don't lose IDs
-        auto [id, trades] = book.addOrder(OrderType::GTC, Side::buy, workload[i].price, workload[i].qty);
-        if (i < warmup) warmupIDs.push_back(id);
-        else measureIDs.push_back(id);
+    for (size_t i {0}; i < WORKLOAD_SIZE; ++i) {
+        const auto& spec = workload[i];
+        // All on the same side so that they don't fill each other
+        // All are GTC so that they are not cancelled
+        if (spec.isMarket) continue;  // no price; can't rest in the book anyway
+        book.addOrder(OrderType::GTC, Side::buy, spec.price, spec.qty);
     }
 
-
-    size_t wi {0};
-    size_t mi {0};
-    auto fn = [&]() {
-        if (wi < warmup) book.cancelOrder(warmupIDs[wi++]);
-        else book.cancelOrder(measureIDs[mi++]);
-    };
-
-    BenchmarkResult result = measureThroughput(SCENARIO_CANCELORDER_HIT_THROUGHPUT, warmup, iterations, fn);
-    printResult(result);
+    // OrderIDs start from 1, so we don't have to save the IDs
+    // since we already know the IDs go from 1 to WORKLOAD_SIZE
+    // We change the ID so that the compiler doesn't inline the loop.
+    // It cannot be optmized because cancelOrder() returns void.
+    OrderID id {1};
+    for (auto _ : state) {
+        benchmark::DoNotOptimize(id);
+        book.cancelOrder(id++);
+        benchmark::ClobberMemory();
+    }
 }
 
-void benchmarkCancelOrderMissThroughput(uint32_t seed) {
-    constexpr uint64_t iterations = 1'000'000;
-    constexpr uint64_t warmup = static_cast<uint64_t>(iterations * WARMUP_PERCENTAGE);
-    
-    OrderBook book;
+BENCHMARK(BM_CancelOrderMiss)
+    ->Unit(benchmark::kNanosecond)
+    ->Repetitions(10)
+    ->ReportAggregatesOnly(true);
 
-    auto fn = [&]() {
-        book.cancelOrder(0); // doesn't exist
-    };
-
-    BenchmarkResult result = measureThroughput(SCENARIO_CANCELORDER_MISS_THROUGHPUT, warmup, iterations, fn);
-    printResult(result);
-}
-
-void benchmarkCancelOrderHitLatency(uint32_t seed);
-void benchmarkCancelOrderMissLatency(uint32_t seed);
+BENCHMARK(BM_CancelOrderHit)
+    ->Unit(benchmark::kNanosecond)
+    ->Repetitions(10)
+    ->Iterations(100'000) // with 10 repetitions consumes exactly 1M IDs against a 2M pool
+    ->ReportAggregatesOnly(true);
 

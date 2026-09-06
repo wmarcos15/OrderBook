@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <random>
 
+constexpr int TYPE_ROLL_MAX = 99;
 constexpr int GTC_THRESHOLD = 90;
 constexpr int MARKET_THRESHOLD = 95;
 constexpr int IOC_THRESHOLD = 99;
@@ -11,9 +12,9 @@ constexpr int PRICE_OFFSET = 10;
 constexpr Quantity MIN_QUANTITY = 1;
 constexpr Quantity MAX_QUANTITY = 100;
 
-OrderSpecs generateWorkload(uint32_t count, uint32_t seed) {
+OrderSpecs generateWorkload(uint64_t count, uint32_t seed) {
     std::mt19937 rng(seed);
-    std::uniform_int_distribution<int> typeDist(0, 99);
+    std::uniform_int_distribution<int> typeDist(0, TYPE_ROLL_MAX);
     std::uniform_int_distribution<int> priceDist(-PRICE_OFFSET, PRICE_OFFSET);
     std::uniform_int_distribution<Quantity> qtyDist(MIN_QUANTITY, MAX_QUANTITY);
     std::uniform_real_distribution<double> sideDist(0.0, 1.0);
@@ -29,9 +30,9 @@ OrderSpecs generateWorkload(uint32_t count, uint32_t seed) {
 
         Side side = (sideRoll < BUY_PROBABILITY) ? Side::buy : Side::sell;
         bool isMarket = typeRoll >= GTC_THRESHOLD && typeRoll < MARKET_THRESHOLD;
-        
-        OrderType type = OrderType::GTC; // as default to avoid garbage values;
-        Price price = 0; // as default to avoid garbage values
+
+        OrderType type = OrderType::GTC;
+        Price price = 0;
         if (!isMarket) {
             price = MID_PRICE + priceOffset;
             if (typeRoll < GTC_THRESHOLD) type = OrderType::GTC;
@@ -39,10 +40,7 @@ OrderSpecs generateWorkload(uint32_t count, uint32_t seed) {
             else type = OrderType::FOK;
         }
 
-        OrderSpec spec = {isMarket, type, price, qty, side};
-        orderSpecs.push_back(spec);
+        orderSpecs.push_back({isMarket, type, price, qty, side});
     }
-
     return orderSpecs;
 }
-
