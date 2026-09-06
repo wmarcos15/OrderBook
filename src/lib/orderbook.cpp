@@ -101,19 +101,12 @@ OrderResult OrderBook::addOrder(OrderType type, Side side, Price price, Quantity
         return {incoming->getID(), trades};
 
     if (!incoming->isFilled()) {
-        if (side == Side::buy) {
-            auto& list = bids_[price];
-            list.push_back(incoming);
-            orders_[id] = OrderEntry{ incoming, std::prev(list.end()) };
-            bidsData_[price].count_++;
-            bidsData_[price].qty_ += incoming->getRemainingQuantity();
-        } else {
-            auto& list = asks_[price];
-            list.push_back(incoming);
-            orders_[id] = OrderEntry{ incoming, std::prev(list.end()) };
-            asksData_[price].count_++;
-            asksData_[price].qty_ += incoming->getRemainingQuantity();
-        }
+        auto& list  = (side == Side::buy) ? bids_[price]     : asks_[price];
+        auto& level = (side == Side::buy) ? bidsData_[price] : asksData_[price];
+        list.push_back(incoming);
+        level.count_++;
+        level.qty_ += incoming->getRemainingQuantity();
+        orders_[id] = OrderEntry{ incoming, std::prev(list.end()), &list, &level };
     }
 
     return {incoming->getID(), trades};
@@ -135,26 +128,25 @@ void OrderBook::cancelOrder(OrderID orderID) {
     auto it = findOrder(orderID);
     if (it == orders_.end()) return;
 
-    const auto [order, location] = it->second;
+    const auto& [order, location, list, level] = it->second;
+    Side side = order->getSide();
     Price price = order->getPrice();
     Quantity remainingQty = order->getRemainingQuantity();
-    
-    if (order->getSide() == Side::buy) {
-        OrderPointers& list = bids_[price];
-        list.erase(location);
-        if (list.empty()) bids_.erase(order->getPrice()); 
-        auto& level = bidsData_[price];
-        level.count_--;
-        level.qty_ -= remainingQty;
-        if (level.count_ == 0) bidsData_.erase(price);
-    } else if (order->getSide() == Side::sell) {
-        OrderPointers& list = asks_[order->getPrice()];
-        list.erase(location);
-        if (list.empty()) asks_.erase(order->getPrice());
-        auto& level = asksData_[price];
-        level.count_--;
-        level.qty_ -= remainingQty;
-        if (level.count_ == 0) asksData_.erase(price);
+
+    // No lookup by price: the entry already points at its level.
+    list->erase(location);
+    level->count_--;
+    level->qty_ -= remainingQty;
+
+    // Only an emptied level is looked up by price, and that is rare.
+    if (list->empty()) {
+        if (side == Side::buy) {
+            bids_.erase(price);
+            bidsData_.erase(price);
+        } else {
+            asks_.erase(price);
+            asksData_.erase(price);
+        }
     }
 
     orders_.erase(orderID);
@@ -182,8 +174,7 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     // Friendly
     if (newPrice == oldPrice && newQty < oldQty) {
         order->fill(oldQty - newQty);
-        auto& data = (side == Side::buy) ? bidsData_ : asksData_;
-        data[oldPrice].qty_ -= (oldQty - newQty);
+        it->second.levelData_->qty_ -= (oldQty - newQty);
         return OrderResult({orderID, {}});
     } else { // Unfriendly
         cancelOrder(orderID);

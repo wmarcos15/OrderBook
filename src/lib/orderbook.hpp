@@ -9,14 +9,22 @@
 
 class OrderBook {
     private:
-        struct OrderEntry {
-            OrderPointer order_ {nullptr};
-            OrderPointers::iterator location_;
-        };
-
         struct LevelData {
             Quantity qty_ {0};
             Quantity count_ {0};
+        };
+
+        // level_ and levelData_ point into bids_/asks_ and bidsData_/asksData_.
+        // Both std::map and std::unordered_map keep element addresses stable
+        // until that element is erased, and a level is only erased once its
+        // last order leaves, so the pointers stay valid for as long as the
+        // entry exists. They let cancelOrder skip the tree descent and the
+        // hash lookup it would otherwise need to find the level by price.
+        struct OrderEntry {
+            OrderPointer order_ {nullptr};
+            OrderPointers::iterator location_;
+            OrderPointers* level_ {nullptr};
+            LevelData* levelData_ {nullptr};
         };
 
         OrderID nextID_ {1};
