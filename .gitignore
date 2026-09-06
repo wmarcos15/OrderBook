@@ -13,3 +13,6 @@
 !tests/**
 !benchmarks
 !benchmarks/**
+
+# Re-exclude after the allowlist
+benchmarks/.venv/
