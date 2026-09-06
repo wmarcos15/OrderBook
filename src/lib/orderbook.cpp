@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <stdexcept>
 
 OrderBook::OrderIterator OrderBook::findOrder(OrderID id) {
     return orders_.find(id);
