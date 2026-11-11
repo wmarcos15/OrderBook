@@ -452,3 +452,205 @@ TEST_F(OrderBookTest, ModifySellOrder_QuantityIncreaseCrossesSpread_TradesGenera
     ASSERT_FALSE(result->trades.empty());
 }
 
+
+// --------------------------
+// Book Configuration
+// --------------------------
+// Tick 5, band [5, 1'000]: used by every test below that needs a custom book.
+// minPrice must be on tick too, so it's 5 rather than the default 1.
+static BookConfig tick5Config() {
+    return BookConfig{.tickSize = 5, .minPrice = 5, .maxPrice = 1'000};
+}
+
+// Config validation
+TEST(BookConfigTest, Constructor_TickSize0_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.tickSize = 0}), std::invalid_argument);
+}
+
+TEST(BookConfigTest, Constructor_NegativeTickSize_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.tickSize = -5}), std::invalid_argument);
+}
+
+TEST(BookConfigTest, Constructor_MinPrice0_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.minPrice = 0}), std::invalid_argument);
+}
+
+TEST(BookConfigTest, Constructor_NegativeMinPrice_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.minPrice = -10}), std::invalid_argument);
+}
+
+TEST(BookConfigTest, Constructor_MinPriceAboveMaxPrice_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.minPrice = 200, .maxPrice = 100}), std::invalid_argument);
+}
+
+TEST(BookConfigTest, Constructor_MinPriceNotOnTick_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.tickSize = 5, .minPrice = 7, .maxPrice = 1'000}),
+                 std::invalid_argument);
+}
+
+// Deliberate: changing only the tick leaves the default band edges (1, 100'000),
+// and 1 is not a multiple of 5. Callers who change the tick must set the band too.
+TEST(BookConfigTest, Constructor_OnlyTickSizeChanged_DefaultBandNotOnTick_Throws) {
+    ASSERT_THROW(OrderBook(BookConfig{.tickSize = 5}), std::invalid_argument);
+}
+
+TEST(BookConfigTest, Constructor_MaxPriceNotOnTick_ThrowsInvalidArgument) {
+    ASSERT_THROW(OrderBook(BookConfig{.tickSize = 5, .minPrice = 5, .maxPrice = 1'003}),
+                 std::invalid_argument);
+}
+
+// Config acceptance
+TEST(BookConfigTest, Constructor_ValidConfig_StoresExactValues) {
+    OrderBook book(tick5Config());
+    const BookConfig& config = book.getBookConfig();
+    ASSERT_EQ(config.tickSize, 5);
+    ASSERT_EQ(config.minPrice, 5);
+    ASSERT_EQ(config.maxPrice, 1'000);
+    ASSERT_TRUE(book.empty());
+}
+
+TEST(BookConfigTest, Constructor_Default_UsesDefaultValues) {
+    OrderBook book;
+    const BookConfig& config = book.getBookConfig();
+    ASSERT_EQ(config.tickSize, 1);
+    ASSERT_EQ(config.minPrice, 1);
+    ASSERT_EQ(config.maxPrice, 100'000);
+}
+
+TEST(BookConfigTest, Constructor_MinPriceEqualsMaxPrice_Accepted) {
+    OrderBook book(BookConfig{.tickSize = 5, .minPrice = 100, .maxPrice = 100});
+    auto [id, trades] = book.addOrder(OrderType::GTC, Side::buy, 100, 10);
+    ASSERT_NE(book.getOrder(id), nullptr);
+    ASSERT_TRUE(trades.empty());
+}
+
+// addOrder: tick
+TEST(BookConfigTest, AddOrder_PriceOnTick_Rests) {
+    OrderBook book(tick5Config());
+    auto [id, trades] = book.addOrder(OrderType::GTC, Side::buy, 500, 10);
+    ASSERT_TRUE(trades.empty());
+    ASSERT_EQ(book.getBestBid()->getID(), id);
+    ASSERT_EQ(book.getLevelQuantity(Side::buy, 500), 10);
+}
+
+TEST(BookConfigTest, AddOrder_PriceOffTick_ThrowsInvalidArgument) {
+    OrderBook book(tick5Config());
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::buy, 503, 10), std::invalid_argument);
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::sell, 503, 10), std::invalid_argument);
+}
+
+TEST(BookConfigTest, AddOrder_PriceOffTickIOCAndFOK_ThrowsInvalidArgument) {
+    OrderBook book(tick5Config());
+    ASSERT_THROW(book.addOrder(OrderType::IOC, Side::buy, 503, 10), std::invalid_argument);
+    ASSERT_THROW(book.addOrder(OrderType::FOK, Side::buy, 503, 10), std::invalid_argument);
+}
+
+// addOrder: band (edges are inclusive)
+TEST(BookConfigTest, AddOrder_PriceExactlyMinPrice_Rests) {
+    OrderBook book(tick5Config());
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::buy, 5, 10);
+    ASSERT_EQ(book.getBestBid()->getID(), id);
+}
+
+TEST(BookConfigTest, AddOrder_PriceExactlyMaxPrice_Rests) {
+    OrderBook book(tick5Config());
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::sell, 1'000, 10);
+    ASSERT_EQ(book.getBestAsk()->getID(), id);
+}
+
+TEST(BookConfigTest, AddOrder_OneTickBelowMinPrice_ThrowsInvalidArgument) {
+    OrderBook book(BookConfig{.tickSize = 5, .minPrice = 100, .maxPrice = 1'000});
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::buy, 95, 10), std::invalid_argument);
+}
+
+TEST(BookConfigTest, AddOrder_OneTickAboveMaxPrice_ThrowsInvalidArgument) {
+    OrderBook book(tick5Config());
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::sell, 1'005, 10), std::invalid_argument);
+}
+
+TEST(BookConfigTest, AddOrder_DefaultBook_AboveDefaultMaxPrice_ThrowsInvalidArgument) {
+    OrderBook book;
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::buy, 100'001, 10), std::invalid_argument);
+}
+
+TEST(BookConfigTest, AddOrder_DefaultBook_AnyPositivePriceInBand_Rests) {
+    OrderBook book;
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::buy, 7, 10);
+    ASSERT_EQ(book.getBestBid()->getID(), id);
+}
+
+// Rejected orders leave no trace
+TEST(BookConfigTest, AddOrder_Rejected_BookUnchangedAndNoIDConsumed) {
+    OrderBook book(tick5Config());
+    auto [firstID, _] = book.addOrder(OrderType::GTC, Side::buy, 500, 10);
+
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::buy, 503, 10), std::invalid_argument);
+    ASSERT_THROW(book.addOrder(OrderType::GTC, Side::buy, 2'000, 10), std::invalid_argument);
+
+    ASSERT_EQ(book.size(), 1);
+    ASSERT_EQ(book.getLevelQuantity(Side::buy, 500), 10);
+
+    OrderResult next = book.addOrder(OrderType::GTC, Side::buy, 505, 10);
+    ASSERT_EQ(next.orderID, firstID + 1);
+}
+
+// modifyOrder: invalid price throws and leaves the order untouched
+TEST(BookConfigTest, ModifyOrder_PriceOffTick_ThrowsAndOrderUnchanged) {
+    OrderBook book(tick5Config());
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::buy, 500, 100);
+
+    ASSERT_THROW(book.modifyOrder(id, 503, 100), std::invalid_argument);
+
+    const Order* order = book.getOrder(id);
+    ASSERT_NE(order, nullptr);
+    ASSERT_EQ(order->getID(), id);
+    ASSERT_EQ(order->getPrice(), 500);
+    ASSERT_EQ(order->getRemainingQuantity(), 100);
+    ASSERT_EQ(book.getLevelQuantity(Side::buy, 500), 100);
+    ASSERT_EQ(book.getLevelCount(Side::buy, 500), 1);
+    ASSERT_EQ(book.size(), 1);
+}
+
+TEST(BookConfigTest, ModifyOrder_PriceAboveMaxPrice_ThrowsAndOrderUnchanged) {
+    OrderBook book(tick5Config());
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::sell, 500, 100);
+
+    ASSERT_THROW(book.modifyOrder(id, 1'005, 100), std::invalid_argument);
+
+    const Order* order = book.getOrder(id);
+    ASSERT_NE(order, nullptr);
+    ASSERT_EQ(order->getPrice(), 500);
+    ASSERT_EQ(order->getRemainingQuantity(), 100);
+    ASSERT_EQ(book.getLevelQuantity(Side::sell, 500), 100);
+    ASSERT_EQ(book.getLevelCount(Side::sell, 500), 1);
+}
+
+TEST(BookConfigTest, ModifyOrder_PriceBelowMinPrice_ThrowsAndOrderUnchanged) {
+    OrderBook book(BookConfig{.tickSize = 5, .minPrice = 100, .maxPrice = 1'000});
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::buy, 500, 100);
+
+    ASSERT_THROW(book.modifyOrder(id, 95, 100), std::invalid_argument);
+
+    const Order* order = book.getOrder(id);
+    ASSERT_NE(order, nullptr);
+    ASSERT_EQ(order->getPrice(), 500);
+    ASSERT_EQ(book.getLevelQuantity(Side::buy, 500), 100);
+}
+
+TEST(BookConfigTest, ModifyOrder_PriceOnTick_MovesOrderWithNewID) {
+    OrderBook book(tick5Config());
+    auto [id, _] = book.addOrder(OrderType::GTC, Side::buy, 500, 100);
+
+    auto result = book.modifyOrder(id, 505, 100);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+    ASSERT_EQ(book.getOrder(id), nullptr);
+    ASSERT_EQ(book.getOrder(result->orderID)->getPrice(), 505);
+    ASSERT_EQ(book.getLevelQuantity(Side::buy, 500), 0);
+    ASSERT_EQ(book.getLevelQuantity(Side::buy, 505), 100);
+}
+
+TEST(BookConfigTest, ModifyOrder_DoesNotExistWithInvalidPrice_ReturnsNullOpt) {
+    OrderBook book(tick5Config());
+    ASSERT_EQ(book.modifyOrder(42, 503, 100), std::nullopt);
+}
