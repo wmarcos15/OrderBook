@@ -117,13 +117,13 @@ bool OrderBook::canFullyFill(OrderPointer order) const {
     return false;
 }
 
-OrderResult OrderBook::addOrder(OrderType type, Side side, Price price, Quantity qty) {
+OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
     validatePrice(price);
     if (qty == 0)
         throw std::invalid_argument("quantity must be greater than zero");
 
     OrderID id = nextID_++;
-    OrderPointer incoming = std::make_shared<Order>(id, type, side, price, qty);
+    OrderPointer incoming = std::make_shared<Order>(id, owner, type, side, price, qty);
 
     if (type == OrderType::FOK && !canFullyFill(incoming))
         return {id, {}};
@@ -145,7 +145,7 @@ OrderResult OrderBook::addOrder(OrderType type, Side side, Price price, Quantity
     return {incoming->getID(), trades};
 }
 
-OrderResult OrderBook::addMarketOrder(Side side, Quantity qty) {
+OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
     Price price;
     if (side == Side::buy) {
         if (asks_.empty()) return {nextID_++, {}};
@@ -154,7 +154,7 @@ OrderResult OrderBook::addMarketOrder(Side side, Quantity qty) {
         if (bids_.empty()) return {nextID_++, {}};
         price = (bids_.rbegin())->first;
     }
-    return addOrder(OrderType::IOC, side, price, qty);
+    return addOrder(owner, OrderType::IOC, side, price, qty);
 }
 
 void OrderBook::cancelOrder(OrderID orderID) {
@@ -190,6 +190,7 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     if (it == orders_.end()) return std::nullopt;
 
     OrderPointer order = it->second.order_;
+    OwnerID owner = order->getOwnerID();
     OrderType type = order->getType();
     Side side = order->getSide();
     Price oldPrice = order->getPrice();
@@ -210,7 +211,7 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
         return OrderResult({orderID, {}});
     } else { // Unfriendly
         cancelOrder(orderID);
-        return addOrder(type, side, newPrice, newQty);
+        return addOrder(owner, type, side, newPrice, newQty);
     }
 
 }

@@ -7,6 +7,8 @@ using Price = std::int32_t;
 using Quantity = std::uint32_t;
 using OrderID = std::uint64_t;
 
+using OwnerID = std::uint32_t;
+
 enum class Side {
     buy,
     sell

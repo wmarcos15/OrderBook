@@ -9,6 +9,7 @@ struct OrderSpec {
     Price     price;
     Quantity  qty;
     Side      side;
+    OwnerID   owner;
 };
 
 using OrderSpecs = std::vector<OrderSpec>;

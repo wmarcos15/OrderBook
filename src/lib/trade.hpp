@@ -8,6 +8,8 @@ struct Trade {
     OrderID askID;
     Price price;
     Quantity quantity;
+    OwnerID bidOwner;
+    OwnerID askOwner;
 };
 
 using Trades = std::vector<Trade>;

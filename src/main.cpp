@@ -3,12 +3,15 @@
 #include <iostream>
 
 int main() {
+    constexpr OwnerID ALICE = 1;
+    constexpr OwnerID BOB   = 2;
+
     OrderBook book;
 
-    OrderResult ask = book.addOrder(OrderType::GTC, Side::sell, 10'001, 50);
+    OrderResult ask = book.addOrder(ALICE, OrderType::GTC, Side::sell, 10'001, 50);
     std::cout << "Rested SELL #" << ask.orderID << " | 50 @ €10001\n\n";
 
-    OrderResult bid = book.addOrder(OrderType::GTC, Side::buy, 10'002, 80);
+    OrderResult bid = book.addOrder(BOB, OrderType::GTC, Side::buy, 10'002, 80);
     std::cout << "Incoming BUY #" << bid.orderID << " | 80 @ €10002\n";
     printTrades(bid.trades);
 
