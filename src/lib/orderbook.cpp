@@ -6,6 +6,26 @@
 #include <iomanip>
 #include <algorithm>
 #include <stdexcept>
+#include <string>
+
+OrderBook::OrderBook(BookConfig config) : config_(config) {
+    if (config.tickSize <= 0)
+        throw std::invalid_argument("tickSize must be greater than 0");
+    if (config.minPrice <= 0)
+        throw std::invalid_argument("minPrice must be greater than 0");
+    if (config.minPrice > config.maxPrice)
+        throw std::invalid_argument("minPrice must not exceed maxPrice");
+    if (config.maxPrice % config.tickSize != 0)
+        throw std::invalid_argument(
+            "maxPrice (" + std::to_string(config.maxPrice) +
+            ") must be a multiple of tickSize (" + std::to_string(config.tickSize) +
+            "); set minPrice and maxPrice to multiples of the tick");
+    if (config.minPrice % config.tickSize != 0)
+        throw std::invalid_argument(
+            "minPrice (" + std::to_string(config.minPrice) +
+            ") must be a multiple of tickSize (" + std::to_string(config.tickSize) +
+            "); set minPrice and maxPrice to multiples of the tick");
+}
 
 OrderBook::OrderIterator OrderBook::findOrder(OrderID id) {
     return orders_.find(id);
@@ -44,6 +64,19 @@ const Order* OrderBook::getOrder(OrderID id) const {
     auto it = orders_.find(id);
     if (it == orders_.end()) return nullptr;
     return it->second.order_.get();
+}
+
+const BookConfig& OrderBook::getBookConfig() const {
+    return config_;
+}
+
+void OrderBook::validatePrice(Price price) const {
+    if (price < config_.minPrice)
+        throw std::invalid_argument("price below minimum");
+    if (price > config_.maxPrice)
+        throw std::invalid_argument("price above maximum");
+    if (price % config_.tickSize != 0)
+        throw std::invalid_argument("price not on tick");
 }
 
 Trades OrderBook::match(OrderPointer incoming) {
@@ -85,10 +118,9 @@ bool OrderBook::canFullyFill(OrderPointer order) const {
 }
 
 OrderResult OrderBook::addOrder(OrderType type, Side side, Price price, Quantity qty) {
+    validatePrice(price);
     if (qty == 0)
         throw std::invalid_argument("quantity must be greater than zero");
-    if (price <= 0)
-        throw std::invalid_argument("price must be greater than zero");
 
     OrderID id = nextID_++;
     OrderPointer incoming = std::make_shared<Order>(id, type, side, price, qty);
@@ -163,10 +195,9 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     Price oldPrice = order->getPrice();
     Quantity oldQty = order->getRemainingQuantity();
 
+    validatePrice(newPrice);
     if (newQty == 0) 
         throw std::invalid_argument("quantity must be greater than zero");
-    if (newPrice <= 0) 
-        throw std::invalid_argument("price must be greater than zero");
 
 
     if (newPrice == oldPrice && newQty == oldQty)
