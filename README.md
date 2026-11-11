@@ -214,7 +214,7 @@ allocator, which is why the working set does not stay cache-resident.
 
 ## Building
 
-Requires CMake ≥ 3.20 and a C++20 compiler. GoogleTest (v1.14.0) and Google
+Requires CMake ≥ 3.25 and a C++20 compiler. GoogleTest (v1.14.0) and Google
 Benchmark (v1.8.3) are fetched automatically with `FetchContent` on first
 configure.
 
