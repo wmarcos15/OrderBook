@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (162 tests) and a Google Benchmark suite that measures what
+GoogleTest suite (174 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -49,13 +49,15 @@ alongside them and explains the difference.
 - **Configurable price grid.** A `BookConfig` sets the tick size and the
   legal price band; prices off the tick or outside the band are rejected
   before anything in the book changes.
+- **Owner IDs.** Every order carries the `OwnerID` of whoever placed it, and
+  every trade records the owner on each side, so fills can be attributed to
+  both the aggressor and the resting order.
 - **O(1) depth queries** — `getLevelQuantity`, `getLevelCount` — from
   per-level aggregates maintained incrementally, never by walking a level.
-- **162 unit tests** across two suites: 82 on book state (resting, level data,
-  cancel, modify, argument validation, book configuration) and 80 on matching
-  semantics (GTC
-  partial/full fills and sweeps, time priority, trade contents, IOC, FOK,
-  market orders).
+- **174 unit tests** across two suites: 87 on book state (resting, level data,
+  cancel, modify, argument validation, book configuration, owners) and 87 on
+  matching semantics (GTC partial/full fills and sweeps, time priority, trade
+  contents and owners, IOC, FOK, market orders).
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -70,13 +72,15 @@ API.
 #include "orderbook.hpp"
 
 OrderBook book;
+constexpr OwnerID ALICE = 1, BOB = 2;
 
-// Rest a sell at 10 001 for 50.
-OrderResult ask = book.addOrder(OrderType::GTC, Side::sell, 10'001, 50);
+// Alice rests a sell at 10 001 for 50.
+OrderResult ask = book.addOrder(ALICE, OrderType::GTC, Side::sell, 10'001, 50);
 
-// A buy at 10 002 for 80 crosses: 50 fill at the resting price (10 001),
-// the remaining 30 rest at 10 002.
-OrderResult bid = book.addOrder(OrderType::GTC, Side::buy, 10'002, 80);
+// Bob's buy at 10 002 for 80 crosses: 50 fill at the resting price (10 001),
+// the remaining 30 rest at 10 002. The trade records Bob as bidOwner and
+// Alice as askOwner.
+OrderResult bid = book.addOrder(BOB, OrderType::GTC, Side::buy, 10'002, 80);
 printTrades(bid.trades);   // [✓] MATCH | BUY #2 vs SELL #1 @ €10001 | 50 units traded
 
 book.getLevelQuantity(Side::buy, 10'002);   // 30
@@ -97,9 +101,9 @@ are legal. Every field has a default (tick 1, band 1–100 000), so
 // Prices must be multiples of 5 between 9 000 and 11 000 (edges included).
 OrderBook book(BookConfig{.tickSize = 5, .minPrice = 9'000, .maxPrice = 11'000});
 
-book.addOrder(OrderType::GTC, Side::buy, 10'005, 10);   // OK
-book.addOrder(OrderType::GTC, Side::buy, 10'003, 10);   // throws: not on tick
-book.addOrder(OrderType::GTC, Side::buy, 11'005, 10);   // throws: above maxPrice
+book.addOrder(BOB, OrderType::GTC, Side::buy, 10'005, 10);   // OK
+book.addOrder(BOB, OrderType::GTC, Side::buy, 10'003, 10);   // throws: not on tick
+book.addOrder(BOB, OrderType::GTC, Side::buy, 11'005, 10);   // throws: above maxPrice
 
 book.getBookConfig().tickSize;   // 5
 ```
@@ -109,7 +113,11 @@ target — run `./build/src/orderbook` to see it execute.
 
 Semantics worth knowing:
 
-- IDs are assigned by the book (`1, 2, 3, …`) and returned in `OrderResult`.
+- Owner IDs are chosen by the caller and passed as the first argument of
+  `addOrder` / `addMarketOrder`; the book only stores them and copies them
+  onto trades. A `modifyOrder` keeps the original owner, including when it
+  becomes a new order with a new ID.
+- Order IDs are assigned by the book (`1, 2, 3, …`) and returned in `OrderResult`.
   A `modifyOrder` that changes price or increases quantity loses time priority
   and returns a **new** ID; the old one is gone.
 - `addOrder` / `modifyOrder` throw `std::invalid_argument` on zero quantity,
