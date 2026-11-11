@@ -641,3 +641,75 @@ TEST_F(MatchingTest, Market_AskSweepsMultipleLevels_AllBidsConsumed) {
     ASSERT_EQ(book_.getBestBid(), nullptr);
 }
 
+
+// --------------------------
+// Owner IDs on trades
+// --------------------------
+TEST_F(MatchingTest, Trade_BuyIsAggressor_CarriesBothOwners) {
+    constexpr OwnerID MAKER = 10, TAKER = 20;
+    book_.addOrder(MAKER, OrderType::GTC, Side::sell, 100, 50);
+    auto [_, trades] = book_.addOrder(TAKER, OrderType::GTC, Side::buy, 100, 50);
+    ASSERT_EQ(trades.size(), 1);
+    EXPECT_EQ(trades[0].bidOwner, TAKER);
+    EXPECT_EQ(trades[0].askOwner, MAKER);
+}
+
+TEST_F(MatchingTest, Trade_SellIsAggressor_CarriesBothOwners) {
+    constexpr OwnerID MAKER = 10, TAKER = 20;
+    book_.addOrder(MAKER, OrderType::GTC, Side::buy, 100, 50);
+    auto [_, trades] = book_.addOrder(TAKER, OrderType::GTC, Side::sell, 100, 50);
+    ASSERT_EQ(trades.size(), 1);
+    EXPECT_EQ(trades[0].bidOwner, MAKER);
+    EXPECT_EQ(trades[0].askOwner, TAKER);
+}
+
+TEST_F(MatchingTest, Trade_SweepAcrossLevels_EachTradeCarriesItsMakersOwner) {
+    constexpr OwnerID MAKER_A = 10, MAKER_B = 11, MAKER_C = 12, TAKER = 20;
+    book_.addOrder(MAKER_A, OrderType::GTC, Side::sell, 100, 10);
+    book_.addOrder(MAKER_B, OrderType::GTC, Side::sell, 101, 10);
+    book_.addOrder(MAKER_C, OrderType::GTC, Side::sell, 102, 10);
+    auto [_, trades] = book_.addOrder(TAKER, OrderType::GTC, Side::buy, 102, 30);
+    ASSERT_EQ(trades.size(), 3);
+    EXPECT_EQ(trades[0].askOwner, MAKER_A);
+    EXPECT_EQ(trades[1].askOwner, MAKER_B);
+    EXPECT_EQ(trades[2].askOwner, MAKER_C);
+    for (const Trade& t : trades) EXPECT_EQ(t.bidOwner, TAKER);
+}
+
+TEST_F(MatchingTest, Trade_SameLevelTimePriority_OwnersFollowQueueOrder) {
+    constexpr OwnerID FIRST = 10, SECOND = 11, TAKER = 20;
+    book_.addOrder(FIRST, OrderType::GTC, Side::buy, 100, 10);
+    book_.addOrder(SECOND, OrderType::GTC, Side::buy, 100, 10);
+    auto [_, trades] = book_.addOrder(TAKER, OrderType::GTC, Side::sell, 100, 20);
+    ASSERT_EQ(trades.size(), 2);
+    EXPECT_EQ(trades[0].bidOwner, FIRST);
+    EXPECT_EQ(trades[1].bidOwner, SECOND);
+    for (const Trade& t : trades) EXPECT_EQ(t.askOwner, TAKER);
+}
+
+TEST_F(MatchingTest, Trade_MarketOrder_CarriesBothOwners) {
+    constexpr OwnerID MAKER = 10, TAKER = 20;
+    book_.addOrder(MAKER, OrderType::GTC, Side::sell, 100, 50);
+    auto [_, trades] = book_.addMarketOrder(TAKER, Side::buy, 50);
+    ASSERT_EQ(trades.size(), 1);
+    EXPECT_EQ(trades[0].bidOwner, TAKER);
+    EXPECT_EQ(trades[0].askOwner, MAKER);
+}
+
+TEST_F(MatchingTest, Trade_IOCPartialFill_CarriesBothOwners) {
+    constexpr OwnerID MAKER = 10, TAKER = 20;
+    book_.addOrder(MAKER, OrderType::GTC, Side::buy, 100, 30);
+    auto [_, trades] = book_.addOrder(TAKER, OrderType::IOC, Side::sell, 100, 50);
+    ASSERT_EQ(trades.size(), 1);
+    EXPECT_EQ(trades[0].bidOwner, MAKER);
+    EXPECT_EQ(trades[0].askOwner, TAKER);
+}
+
+TEST_F(MatchingTest, Trade_ModifiedOrderFilled_CarriesOriginalOwner) {
+    constexpr OwnerID MAKER = 10, TAKER = 20;
+    auto [id, _] = book_.addOrder(MAKER, OrderType::GTC, Side::sell, 105, 50);
+    book_.modifyOrder(id, 100, 50);
+    Trades trades = book_.addOrder(TAKER, OrderType::GTC, Side::buy, 100, 50).trades;
+    ASSERT_EQ(trades.size(), 1);
+    EXPECT_EQ(trades[0].askOwner, MAKER);
+}

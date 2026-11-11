@@ -659,3 +659,46 @@ TEST(BookConfigTest, ModifyOrder_DoesNotExistWithInvalidPrice_ReturnsNullOpt) {
     OrderBook book(tick5Config());
     ASSERT_EQ(book.modifyOrder(42, 503, 100), std::nullopt);
 }
+
+// --------------------------
+// Owner IDs
+// --------------------------
+TEST_F(OrderBookTest, AddOrder_RestingOrder_StoresOwner) {
+    constexpr OwnerID OWNER = 42;
+    auto [id, _] = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 100, 10);
+    ASSERT_EQ(book_.getOrder(id)->getOwnerID(), OWNER);
+}
+
+TEST_F(OrderBookTest, AddOrder_PartiallyFilledRemainder_KeepsOwner) {
+    constexpr OwnerID OWNER = 42;
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 30);
+    auto [id, _] = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 100, 50);
+    ASSERT_EQ(book_.getOrder(id)->getRemainingQuantity(), 20);
+    ASSERT_EQ(book_.getOrder(id)->getOwnerID(), OWNER);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_QuantityReduced_KeepsOwner) {
+    constexpr OwnerID OWNER = 42;
+    auto [id, _] = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 100, 50);
+    auto result = book_.modifyOrder(id, 100, 20);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(book_.getOrder(result->orderID)->getOwnerID(), OWNER);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_PriceChanged_NewOrderKeepsOwner) {
+    constexpr OwnerID OWNER = 42;
+    auto [id, _] = book_.addOrder(OWNER, OrderType::GTC, Side::sell, 105, 50);
+    auto result = book_.modifyOrder(id, 103, 50);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+    ASSERT_EQ(book_.getOrder(result->orderID)->getOwnerID(), OWNER);
+}
+
+TEST_F(OrderBookTest, ModifyOrder_QuantityIncreased_NewOrderKeepsOwner) {
+    constexpr OwnerID OWNER = 42;
+    auto [id, _] = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 100, 50);
+    auto result = book_.modifyOrder(id, 100, 80);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(result->orderID, id);
+    ASSERT_EQ(book_.getOrder(result->orderID)->getOwnerID(), OWNER);
+}
