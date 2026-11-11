@@ -3,9 +3,12 @@
 #include "trade.hpp"
 #include "order.hpp" // so that I can later just import oderbook.hpp into main (less overhead)
 
+#include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <optional>
+#include <unordered_map>
 
 class OrderBook {
     private:

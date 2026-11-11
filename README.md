@@ -1,5 +1,7 @@
 # OrderBook
 
+[![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
+
 A price-time priority limit order book and matching engine in C++17, with a
 GoogleTest suite (136 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those

@@ -1,6 +1,8 @@
 #pragma once
 #include "types.hpp"
 
+#include <vector>
+
 struct Trade {
     OrderID bidID;
     OrderID askID;

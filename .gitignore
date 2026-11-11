@@ -16,3 +16,7 @@
 
 # Re-exclude after the allowlist
 benchmarks/.venv/
+
+# CI
+!.github/
+!.github/**
