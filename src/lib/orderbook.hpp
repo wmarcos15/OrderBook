@@ -10,6 +10,12 @@
 #include <optional>
 #include <unordered_map>
 
+struct BookConfig {
+    Price tickSize {1};
+    Price minPrice {1};
+    Price maxPrice {100'000};
+};
+
 class OrderBook {
     private:
         struct LevelData {
@@ -30,6 +36,8 @@ class OrderBook {
             LevelData* levelData_ {nullptr};
         };
 
+        BookConfig config_;
+
         OrderID nextID_ {1};
 
         std::map<Price, OrderPointers, std::greater<Price>> bids_;
@@ -38,6 +46,8 @@ class OrderBook {
 
         std::unordered_map<Price, LevelData> bidsData_;
         std::unordered_map<Price, LevelData> asksData_;
+
+        void validatePrice(Price price) const;
 
         Trades match(OrderPointer incoming);
         bool canFullyFill(OrderPointer order) const;
@@ -75,6 +85,8 @@ class OrderBook {
             }
 
     public:
+        explicit OrderBook(BookConfig config = {});
+
         std::size_t size() const; // total order count
         const Order* getBestBid() const;
         const Order* getBestAsk() const;
@@ -82,6 +94,7 @@ class OrderBook {
         const Order* getOrder(OrderID id) const;
         Quantity getLevelQuantity(Side side, Price price) const;
         std::size_t getLevelCount(Side side, Price price) const;
+        const BookConfig& getBookConfig() const;
 
         OrderResult addOrder(OrderType type, Side side, Price price, Quantity qty);
         OrderResult addMarketOrder(Side side, Quantity qty);
