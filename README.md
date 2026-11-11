@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
-A price-time priority limit order book and matching engine in C++17, with a
+A price-time priority limit order book and matching engine in C++20, with a
 GoogleTest suite (136 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
@@ -214,7 +214,7 @@ allocator, which is why the working set does not stay cache-resident.
 
 ## Building
 
-Requires CMake ≥ 3.20 and a C++17 compiler. GoogleTest (v1.14.0) and Google
+Requires CMake ≥ 3.20 and a C++20 compiler. GoogleTest (v1.14.0) and Google
 Benchmark (v1.8.3) are fetched automatically with `FetchContent` on first
 configure.
 
