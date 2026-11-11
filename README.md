@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (136 tests) and a Google Benchmark suite that measures what
+GoogleTest suite (162 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -46,10 +46,14 @@ alongside them and explains the difference.
   orders.
 - **Operations:** `addOrder`, `addMarketOrder`, `cancelOrder`, `modifyOrder`.
   Cancel and in-place quantity reduction are O(1) — no lookup by price.
+- **Configurable price grid.** A `BookConfig` sets the tick size and the
+  legal price band; prices off the tick or outside the band are rejected
+  before anything in the book changes.
 - **O(1) depth queries** — `getLevelQuantity`, `getLevelCount` — from
   per-level aggregates maintained incrementally, never by walking a level.
-- **136 unit tests** across two suites: 56 on book state (resting, level data,
-  cancel, modify, argument validation) and 80 on matching semantics (GTC
+- **162 unit tests** across two suites: 82 on book state (resting, level data,
+  cancel, modify, argument validation, book configuration) and 80 on matching
+  semantics (GTC
   partial/full fills and sweeps, time priority, trade contents, IOC, FOK,
   market orders).
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
@@ -85,6 +89,21 @@ book.modifyOrder(bid.orderID, 10'002, 10);
 book.cancelOrder(bid.orderID);
 ```
 
+A book can also be created with a `BookConfig` that restricts which prices
+are legal. Every field has a default (tick 1, band 1–100 000), so
+`OrderBook book;` above uses those:
+
+```cpp
+// Prices must be multiples of 5 between 9 000 and 11 000 (edges included).
+OrderBook book(BookConfig{.tickSize = 5, .minPrice = 9'000, .maxPrice = 11'000});
+
+book.addOrder(OrderType::GTC, Side::buy, 10'005, 10);   // OK
+book.addOrder(OrderType::GTC, Side::buy, 10'003, 10);   // throws: not on tick
+book.addOrder(OrderType::GTC, Side::buy, 11'005, 10);   // throws: above maxPrice
+
+book.getBookConfig().tickSize;   // 5
+```
+
 That example is [`src/main.cpp`](src/main.cpp), built as the `orderbook`
 target — run `./build/src/orderbook` to see it execute.
 
@@ -93,8 +112,13 @@ Semantics worth knowing:
 - IDs are assigned by the book (`1, 2, 3, …`) and returned in `OrderResult`.
   A `modifyOrder` that changes price or increases quantity loses time priority
   and returns a **new** ID; the old one is gone.
-- `addOrder` / `modifyOrder` throw `std::invalid_argument` on zero quantity or
-  non-positive price. `modifyOrder` returns `std::nullopt` for an unknown ID.
+- `addOrder` / `modifyOrder` throw `std::invalid_argument` on zero quantity,
+  or on a price below `minPrice`, above `maxPrice`, or not a multiple of
+  `tickSize`. A rejected `addOrder` consumes no ID; a rejected `modifyOrder`
+  leaves the original order exactly as it was.
+- The `OrderBook` constructor throws `std::invalid_argument` if the config is
+  inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
+  `maxPrice`, or either band edge not a multiple of `tickSize`. `modifyOrder` returns `std::nullopt` for an unknown ID.
   `cancelOrder` on an unknown ID is a silent no-op.
 - A market order is converted internally to an `IOC` limit order at the worst
   price on the opposite side, so it sweeps everything available and discards
@@ -534,7 +558,7 @@ OrderBook/
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
-│   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation
+│   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config
 │   └── matching_test.cpp       # GTC / IOC / FOK / market matching semantics
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark
