@@ -69,9 +69,12 @@ class OrderBook {
 
                 oppositeData[bestPrice].qty_ -= qty;
 
-                OrderID bidID = incoming->getSide() == Side::buy ? incoming->getID() : resting->getID();
-                OrderID askID = incoming->getSide() == Side::buy ? resting->getID() : incoming->getID();
-                trades.push_back({ bidID, askID, bestPrice, qty });
+                bool incomingIsBuy = incoming->getSide() == Side::buy;
+                OrderID bidID = incomingIsBuy ? incoming->getID() : resting->getID();
+                OrderID askID = incomingIsBuy ? resting->getID() : incoming->getID();
+                OwnerID bidOwner = incomingIsBuy ? incoming->getOwnerID() : resting->getOwnerID();
+                OwnerID askOwner = incomingIsBuy ? resting->getOwnerID() : incoming->getOwnerID();
+                trades.push_back({ bidID, askID, bestPrice, qty, bidOwner, askOwner });
 
                 if (resting->isFilled()) {
                     oppositeData[bestPrice].count_--;
@@ -96,8 +99,8 @@ class OrderBook {
         std::size_t getLevelCount(Side side, Price price) const;
         const BookConfig& getBookConfig() const;
 
-        OrderResult addOrder(OrderType type, Side side, Price price, Quantity qty);
-        OrderResult addMarketOrder(Side side, Quantity qty);
+        OrderResult addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
+        OrderResult addMarketOrder(OwnerID owner, Side side, Quantity qty);
         void cancelOrder(OrderID orderID);
         std::optional<OrderResult> modifyOrder(OrderID orderID, Price newPrice, Quantity newQty);
 

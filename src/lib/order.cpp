@@ -1,7 +1,7 @@
 #include "order.hpp"
 
-Order::Order(OrderID id, OrderType type, Side side, Price price, Quantity quantity)
-    : id_ {id}, type_ {type}, side_ {side}, price_ {price}, startQuantity_ {quantity}, remainingQuantity_ {quantity}
+Order::Order(OrderID id, OwnerID owner, OrderType type, Side side, Price price, Quantity quantity)
+    : id_ {id}, type_ {type}, side_ {side}, price_ {price}, startQuantity_ {quantity}, remainingQuantity_ {quantity}, ownerID_ {owner}
 {}
 
 OrderID Order::getID() const {return id_;}
@@ -10,6 +10,7 @@ Side Order::getSide() const {return side_;}
 Price Order::getPrice() const {return price_;}
 Quantity Order::getStartQuantity() const {return startQuantity_;}
 Quantity Order::getRemainingQuantity() const {return remainingQuantity_;}
+OwnerID Order::getOwnerID() const {return ownerID_;}
 
 bool Order::isFilled() const {
     return remainingQuantity_ == 0;

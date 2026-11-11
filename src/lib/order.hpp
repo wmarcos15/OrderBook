@@ -9,9 +9,10 @@ class Order {
         Price price_;
         Quantity startQuantity_;
         Quantity remainingQuantity_;
+        OwnerID ownerID_;
 
     public:
-        Order(OrderID id, OrderType type, Side side, Price price, Quantity quantity);
+        Order(OrderID id, OwnerID owner, OrderType type, Side side, Price price, Quantity quantity);
 
         OrderID getID() const;
         OrderType getType() const;
@@ -19,6 +20,7 @@ class Order {
         Price getPrice() const;
         Quantity getStartQuantity() const;
         Quantity getRemainingQuantity() const;
+        OwnerID getOwnerID() const;
         bool isFilled() const;
         void fill(Quantity qty);
 };

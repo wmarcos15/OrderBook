@@ -28,7 +28,7 @@ static void BM_CancelOrderHit(benchmark::State& state) {
         // All on the same side so that they don't fill each other
         // All are GTC so that they are not cancelled
         if (spec.isMarket) continue;  // no price; can't rest in the book anyway
-        book.addOrder(OrderType::GTC, Side::buy, spec.price, spec.qty);
+        book.addOrder(spec.owner, OrderType::GTC, Side::buy, spec.price, spec.qty);
     }
 
     // OrderIDs start from 1, so we don't have to save the IDs

@@ -16,8 +16,8 @@ static void BM_AddOrder(benchmark::State& state) {
         const auto& spec = workload[i++];
 
         auto result = spec.isMarket
-            ? book.addMarketOrder(spec.side, spec.qty)
-            : book.addOrder(spec.type, spec.side, spec.price, spec.qty);
+            ? book.addMarketOrder(spec.owner, spec.side, spec.qty)
+            : book.addOrder(spec.owner, spec.type, spec.side, spec.price, spec.qty);
 
         benchmark::DoNotOptimize(result); // so that compiler doesn't delete result given how is never used
     }
