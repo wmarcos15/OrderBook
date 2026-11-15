@@ -158,6 +158,14 @@ class OrderBook {
     public:
         explicit OrderBook(BookConfig config = {});
 
+        // Not copyable: every OrderEntry points into this book's own levels, so
+        // the entries of a copy would still point into the original. Moving is
+        // fine, because the containers keep their elements' addresses when moved.
+        OrderBook(const OrderBook&) = delete;
+        OrderBook& operator=(const OrderBook&) = delete;
+        OrderBook(OrderBook&&) = default;
+        OrderBook& operator=(OrderBook&&) = default;
+
         std::size_t size() const; // total order count
         const Order* getBestBid() const;
         const Order* getBestAsk() const;
