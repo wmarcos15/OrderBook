@@ -1,5 +1,7 @@
 #include "order.hpp"
 
+#include <algorithm>
+
 namespace orderbook {
 
 Order::Order(OrderID id, OwnerID owner, OrderType type, Side side, Price price, Quantity quantity)
