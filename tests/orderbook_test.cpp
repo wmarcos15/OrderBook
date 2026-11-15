@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include "orderbook.hpp"
 #include "types.hpp"
 
@@ -963,4 +965,86 @@ TEST(BookConfigTest, GetDepth_EmptyPricesBetweenLevels_NotReported) {
     ASSERT_EQ(depth.size(), 2);
     EXPECT_EQ(depth[0].price, 100);
     EXPECT_EQ(depth[1].price, 115);
+}
+
+// --------------------------
+// Copy and move
+// --------------------------
+// The book's entries point into its own levels, so a copy would share state
+// with the original. Copying must not compile; moving must leave a working book.
+TEST(OrderBookCopyMoveTest, OrderBook_Copy_IsNotAllowed) {
+    EXPECT_FALSE(std::is_copy_constructible_v<OrderBook>);
+    EXPECT_FALSE(std::is_copy_assignable_v<OrderBook>);
+}
+
+TEST(OrderBookCopyMoveTest, OrderBook_Move_IsAllowed) {
+    EXPECT_TRUE(std::is_move_constructible_v<OrderBook>);
+    EXPECT_TRUE(std::is_move_assignable_v<OrderBook>);
+}
+
+TEST(OrderBookCopyMoveTest, MoveConstructed_BookKeepsOrdersAndLevelData) {
+    OrderBook source;
+    auto bidID = source.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 50).orderID;
+    source.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30);
+    source.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 20);
+
+    OrderBook book(std::move(source));
+
+    ASSERT_EQ(book.size(), 3);
+    ASSERT_NE(book.getBestBid(), nullptr);
+    EXPECT_EQ(book.getBestBid()->getID(), bidID);
+    EXPECT_EQ(book.getLevelQuantity(Side::buy, 99), 80);
+    EXPECT_EQ(book.getLevelCount(Side::buy, 99), 2);
+    EXPECT_EQ(book.getLevelQuantity(Side::sell, 101), 20);
+}
+
+// Cancel, modify and match all go through the pointers stored in the entries
+TEST(OrderBookCopyMoveTest, MoveConstructed_BookCanCancelModifyAndMatch) {
+    OrderBook source;
+    auto firstID = source.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 50).orderID;
+    auto secondID = source.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30).orderID;
+    source.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 20);
+
+    OrderBook book(std::move(source));
+    book.cancelOrder(firstID);
+    book.modifyOrder(secondID, 99, 10);
+    auto result = book.addOrder(BUYER, OrderType::GTC, Side::buy, 101, 20);
+
+    EXPECT_EQ(book.getOrder(firstID), nullptr);
+    EXPECT_EQ(book.getLevelQuantity(Side::buy, 99), 10);
+    EXPECT_EQ(book.getLevelCount(Side::buy, 99), 1);
+    ASSERT_EQ(result.trades.size(), 1);
+    EXPECT_EQ(result.trades[0].quantity, 20);
+    EXPECT_EQ(book.getBestAsk(), nullptr);
+}
+
+TEST(OrderBookCopyMoveTest, MoveConstructed_BookKeepsConfigPoliciesAndNextID) {
+    OrderBook source(tick5Config());
+    source.setSelfTradePolicy(BUYER, SelfTradePolicy::cancelOldest);
+    source.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+
+    OrderBook book(std::move(source));
+    auto id = book.addOrder(BUYER, OrderType::GTC, Side::buy, 95, 10).orderID;
+
+    EXPECT_EQ(book.getBookConfig().tickSize, 5);
+    EXPECT_EQ(book.getSelfTradePolicy(BUYER), SelfTradePolicy::cancelOldest);
+    EXPECT_EQ(id, 2);
+}
+
+TEST(OrderBookCopyMoveTest, MoveAssigned_BookReplacesItsOrdersAndStaysUsable) {
+    OrderBook source;
+    auto id = source.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 40).orderID;
+    source.addOrder(SELLER, OrderType::GTC, Side::sell, 102, 60);
+
+    OrderBook book;
+    book.addOrder(BUYER, OrderType::GTC, Side::buy, 50, 5);
+    book = std::move(source);
+    book.cancelOrder(id);
+
+    ASSERT_EQ(book.size(), 1);
+    EXPECT_EQ(book.getBestBid(), nullptr);
+    ASSERT_NE(book.getBestAsk(), nullptr);
+    EXPECT_EQ(book.getBestAsk()->getPrice(), 102);
+    EXPECT_EQ(book.getLevelQuantity(Side::sell, 101), 0);
+    EXPECT_EQ(book.getLevelQuantity(Side::sell, 102), 60);
 }
