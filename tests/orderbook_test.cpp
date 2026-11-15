@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include "orderbook.hpp"
 #include "types.hpp"
@@ -701,4 +703,264 @@ TEST_F(OrderBookTest, ModifyOrder_QuantityIncreased_NewOrderKeepsOwner) {
     ASSERT_TRUE(result.has_value());
     ASSERT_NE(result->orderID, id);
     ASSERT_EQ(book_.getOrder(result->orderID)->getOwnerID(), OWNER);
+}
+
+// --------------------------
+// Depth snapshot
+// --------------------------
+TEST_F(OrderBookTest, GetDepth_EmptyBook_ReturnsNoLevels) {
+    EXPECT_TRUE(book_.getDepth(Side::buy, 5).empty());
+    EXPECT_TRUE(book_.getDepth(Side::sell, 5).empty());
+}
+
+TEST_F(OrderBookTest, GetDepth_ZeroLevelsRequested_ReturnsNoLevels) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 50);
+
+    EXPECT_TRUE(book_.getDepth(Side::buy, 0).empty());
+    EXPECT_TRUE(book_.getDepth(Side::sell, 0).empty());
+}
+
+TEST_F(OrderBookTest, GetDepth_FewerLevelsThanRequested_ReturnsAllOfThem) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30);
+
+    auto depth = book_.getDepth(Side::buy, 5);
+
+    ASSERT_EQ(depth.size(), 2);
+    EXPECT_EQ(depth[0].price, 100);
+    EXPECT_EQ(depth[1].price, 99);
+}
+
+TEST_F(OrderBookTest, GetDepth_MoreLevelsThanRequested_ReturnsOnlyTheBestOnes) {
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 10);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 102, 20);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 103, 30);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 104, 40);
+
+    auto depth = book_.getDepth(Side::sell, 2);
+
+    ASSERT_EQ(depth.size(), 2);
+    EXPECT_EQ(depth[0].price, 101);
+    EXPECT_EQ(depth[1].price, 102);
+}
+
+TEST_F(OrderBookTest, GetDepth_ExactlyAsManyLevelsAsRequested_ReturnsAllOfThem) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 98, 10);
+
+    auto depth = book_.getDepth(Side::buy, 3);
+
+    ASSERT_EQ(depth.size(), 3);
+    EXPECT_EQ(depth[2].price, 98);
+}
+
+TEST_F(OrderBookTest, GetDepth_BidsAddedInMixedOrder_HighestPriceFirst) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 98, 10);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 20);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 97, 30);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 40);
+
+    auto depth = book_.getDepth(Side::buy, 4);
+
+    ASSERT_EQ(depth.size(), 4);
+    EXPECT_EQ(depth[0].price, 100);
+    EXPECT_EQ(depth[1].price, 99);
+    EXPECT_EQ(depth[2].price, 98);
+    EXPECT_EQ(depth[3].price, 97);
+}
+
+TEST_F(OrderBookTest, GetDepth_AsksAddedInMixedOrder_LowestPriceFirst) {
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 103, 10);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 20);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 104, 30);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 102, 40);
+
+    auto depth = book_.getDepth(Side::sell, 4);
+
+    ASSERT_EQ(depth.size(), 4);
+    EXPECT_EQ(depth[0].price, 101);
+    EXPECT_EQ(depth[1].price, 102);
+    EXPECT_EQ(depth[2].price, 103);
+    EXPECT_EQ(depth[3].price, 104);
+}
+
+TEST_F(OrderBookTest, GetDepth_SeveralOrdersAtOnePrice_OneLevelWithTotals) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 30);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 20);
+
+    auto depth = book_.getDepth(Side::buy, 5);
+
+    ASSERT_EQ(depth.size(), 1);
+    EXPECT_EQ(depth[0].price, 100);
+    EXPECT_EQ(depth[0].quantity, 100);
+    EXPECT_EQ(depth[0].count, 3);
+}
+
+TEST_F(OrderBookTest, GetDepth_BothSidesPopulated_EachSideHoldsOnlyItsOwnLevels) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 50);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 98, 40);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 30);
+
+    auto bidDepth = book_.getDepth(Side::buy, 5);
+    auto askDepth = book_.getDepth(Side::sell, 5);
+
+    ASSERT_EQ(bidDepth.size(), 2);
+    ASSERT_EQ(askDepth.size(), 1);
+    EXPECT_EQ(bidDepth[0].price, 99);
+    EXPECT_EQ(bidDepth[1].price, 98);
+    EXPECT_EQ(askDepth[0].price, 101);
+    EXPECT_EQ(askDepth[0].quantity, 30);
+}
+
+TEST_F(OrderBookTest, GetDepth_PopulatedBook_AgreesWithBestAndLevelQueries) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 50);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 25);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 97, 40);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 30);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 104, 60);
+
+    auto bidDepth = book_.getDepth(Side::buy, 5);
+    auto askDepth = book_.getDepth(Side::sell, 5);
+
+    ASSERT_EQ(bidDepth.size(), 2);
+    ASSERT_EQ(askDepth.size(), 2);
+    EXPECT_EQ(bidDepth[0].price, book_.getBestBid()->getPrice());
+    EXPECT_EQ(askDepth[0].price, book_.getBestAsk()->getPrice());
+
+    for (const auto& level : bidDepth) {
+        EXPECT_EQ(level.quantity, book_.getLevelQuantity(Side::buy, level.price));
+        EXPECT_EQ(level.count, book_.getLevelCount(Side::buy, level.price));
+    }
+    for (const auto& level : askDepth) {
+        EXPECT_EQ(level.quantity, book_.getLevelQuantity(Side::sell, level.price));
+        EXPECT_EQ(level.count, book_.getLevelCount(Side::sell, level.price));
+    }
+}
+
+TEST_F(OrderBookTest, GetDepth_RestingOrderPartiallyFilled_QuantityDropsCountStays) {
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 30);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 20);
+
+    auto depth = book_.getDepth(Side::sell, 5);
+
+    ASSERT_EQ(depth.size(), 1);
+    EXPECT_EQ(depth[0].quantity, 60);
+    EXPECT_EQ(depth[0].count, 2);
+    EXPECT_TRUE(book_.getDepth(Side::buy, 5).empty());
+}
+
+TEST_F(OrderBookTest, GetDepth_BestLevelFullyFilled_NextLevelBecomesFirst) {
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 50);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 30);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+
+    auto depth = book_.getDepth(Side::sell, 5);
+
+    ASSERT_EQ(depth.size(), 1);
+    EXPECT_EQ(depth[0].price, 101);
+    EXPECT_EQ(depth[0].quantity, 30);
+    EXPECT_EQ(depth[0].count, 1);
+}
+
+TEST_F(OrderBookTest, GetDepth_OneOrderAmongSeveralCancelled_QuantityAndCountDrop) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+    auto id = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 30).orderID;
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 20);
+    book_.cancelOrder(id);
+
+    auto depth = book_.getDepth(Side::buy, 5);
+
+    ASSERT_EQ(depth.size(), 1);
+    EXPECT_EQ(depth[0].quantity, 70);
+    EXPECT_EQ(depth[0].count, 2);
+}
+
+TEST_F(OrderBookTest, GetDepth_LastOrderAtLevelCancelled_LevelDisappears) {
+    auto id = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50).orderID;
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30);
+    book_.cancelOrder(id);
+
+    auto depth = book_.getDepth(Side::buy, 5);
+
+    ASSERT_EQ(depth.size(), 1);
+    EXPECT_EQ(depth[0].price, 99);
+    EXPECT_EQ(depth[0].quantity, 30);
+}
+
+TEST_F(OrderBookTest, GetDepth_QuantityReducedInPlace_QuantityDropsCountStays) {
+    auto id = book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 50).orderID;
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 30);
+    book_.modifyOrder(id, 101, 10);
+
+    auto depth = book_.getDepth(Side::sell, 5);
+
+    ASSERT_EQ(depth.size(), 1);
+    EXPECT_EQ(depth[0].quantity, 40);
+    EXPECT_EQ(depth[0].count, 2);
+}
+
+TEST_F(OrderBookTest, GetDepth_OrderMovedToNewPrice_QuantityMovesToNewLevel) {
+    auto id = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50).orderID;
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 30);
+    book_.modifyOrder(id, 98, 50);
+
+    auto depth = book_.getDepth(Side::buy, 5);
+
+    ASSERT_EQ(depth.size(), 2);
+    EXPECT_EQ(depth[0].price, 100);
+    EXPECT_EQ(depth[0].quantity, 30);
+    EXPECT_EQ(depth[0].count, 1);
+    EXPECT_EQ(depth[1].price, 98);
+    EXPECT_EQ(depth[1].quantity, 50);
+    EXPECT_EQ(depth[1].count, 1);
+}
+
+// The result is a copy: later changes to the book must not show up in it
+TEST_F(OrderBookTest, GetDepth_BookChangedAfterwards_EarlierSnapshotUnchanged) {
+    auto id = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50).orderID;
+    auto before = book_.getDepth(Side::buy, 5);
+
+    book_.cancelOrder(id);
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30);
+    auto after = book_.getDepth(Side::buy, 5);
+
+    ASSERT_EQ(before.size(), 1);
+    EXPECT_EQ(before[0].price, 100);
+    EXPECT_EQ(before[0].quantity, 50);
+    EXPECT_EQ(before[0].count, 1);
+    ASSERT_EQ(after.size(), 1);
+    EXPECT_EQ(after[0].price, 99);
+    EXPECT_EQ(after[0].quantity, 30);
+}
+
+// Asking for more levels than could ever exist must return the whole side, not
+// try to allocate room for all of them.
+TEST_F(OrderBookTest, GetDepth_LargestPossibleLevelsRequested_ReturnsWholeSide) {
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 10);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 102, 20);
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 103, 30);
+
+    auto depth = book_.getDepth(Side::sell, std::numeric_limits<std::size_t>::max());
+
+    ASSERT_EQ(depth.size(), 3);
+    EXPECT_EQ(depth[0].price, 101);
+    EXPECT_EQ(depth[2].price, 103);
+}
+
+// Only levels that hold orders are reported: 105 and 110 are legal prices
+// between the two orders, but nothing rests there.
+TEST(BookConfigTest, GetDepth_EmptyPricesBetweenLevels_NotReported) {
+    OrderBook book(tick5Config());
+    book.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 10);
+    book.addOrder(SELLER, OrderType::GTC, Side::sell, 115, 20);
+
+    auto depth = book.getDepth(Side::sell, 5);
+
+    ASSERT_EQ(depth.size(), 2);
+    EXPECT_EQ(depth[0].price, 100);
+    EXPECT_EQ(depth[1].price, 115);
 }
