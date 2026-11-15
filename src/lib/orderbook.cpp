@@ -147,6 +147,10 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
 }
 
 OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
+    // Checked here as well: against an empty opposite side addOrder is never reached
+    if (qty == 0)
+        throw std::invalid_argument("quantity must be greater than zero");
+
     Price price;
     if (side == Side::buy) {
         if (asks_.empty()) return {nextID_++, {}};
