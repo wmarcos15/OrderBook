@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (174 tests) and a Google Benchmark suite that measures what
+GoogleTest suite (225 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -52,12 +52,17 @@ alongside them and explains the difference.
 - **Owner IDs.** Every order carries the `OwnerID` of whoever placed it, and
   every trade records the owner on each side, so fills can be attributed to
   both the aggressor and the resting order.
+- **Self-trade prevention.** An owner's incoming order never trades against
+  that owner's own resting order. A policy decides what happens instead:
+  `cancelNewest` drops the incoming order, `cancelOldest` cancels the resting
+  one and keeps matching. The book has a default policy and each owner can
+  override it.
 - **O(1) depth queries** — `getLevelQuantity`, `getLevelCount` — from
   per-level aggregates maintained incrementally, never by walking a level.
-- **174 unit tests** across two suites: 87 on book state (resting, level data,
-  cancel, modify, argument validation, book configuration, owners) and 87 on
+- **225 unit tests** across two suites: 87 on book state (resting, level data,
+  cancel, modify, argument validation, book configuration, owners) and 138 on
   matching semantics (GTC partial/full fills and sweeps, time priority, trade
-  contents and owners, IOC, FOK, market orders).
+  contents and owners, IOC, FOK, market orders, self-trade prevention).
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -108,8 +113,32 @@ book.addOrder(BOB, OrderType::GTC, Side::buy, 11'005, 10);   // throws: above ma
 book.getBookConfig().tickSize;   // 5
 ```
 
-That example is [`src/main.cpp`](src/main.cpp), built as the `orderbook`
-target — run `./build/src/orderbook` to see it execute.
+Self-trade prevention is on by default. The policy comes from
+`BookConfig::defaultSelfTradePolicy` (`cancelNewest` unless set otherwise)
+and can be overridden per owner:
+
+```cpp
+OrderBook book;
+
+// Alice rests a sell, then sends a buy that would cross it.
+OrderResult ask = book.addOrder(ALICE, OrderType::GTC, Side::sell, 10'001, 50);
+OrderResult bid = book.addOrder(ALICE, OrderType::GTC, Side::buy, 10'001, 75);
+
+bid.trades.empty();   // true: no trade against her own order
+bid.status;           // OrderStatus::selfTradeCancelledNewest
+// cancelNewest: the buy is dropped, the sell still rests with 50.
+
+book.setSelfTradePolicy(ALICE, SelfTradePolicy::cancelOldest);
+bid = book.addOrder(ALICE, OrderType::GTC, Side::buy, 10'001, 75);
+
+bid.status;           // OrderStatus::selfTradeCancelledOldest
+bid.cancelledOrders;  // { ask.orderID }: the resting sell was cancelled
+// cancelOldest: matching carries on, and the 75 left over rest at 10 001.
+```
+
+The first example and the self-trade one are [`src/main.cpp`](src/main.cpp),
+built as the `orderbook` target — run `./build/src/orderbook` to see them
+execute.
 
 Semantics worth knowing:
 
@@ -131,9 +160,39 @@ Semantics worth knowing:
 - A market order is converted internally to an `IOC` limit order at the worst
   price on the opposite side, so it sweeps everything available and discards
   any residual. Against an empty opposite side it returns an ID and no trades.
-- `FOK` is checked against the per-level aggregates before touching the book,
-  so a rejected FOK leaves the book untouched. It still consumes an order ID,
-  which comes back in `OrderResult` alongside an empty trade list.
+- `FOK` is checked before touching the book, so a rejected FOK leaves the
+  book untouched. It still consumes an order ID, which comes back in
+  `OrderResult` alongside an empty trade list.
+- A self-match is an incoming order meeting a resting order with the same
+  `OwnerID`. It never produces a trade. Under `cancelNewest` matching stops
+  there and whatever is left of the incoming order is dropped, even for a
+  `GTC`. Under `cancelOldest` the resting order is cancelled and matching
+  continues, so a `GTC` remainder rests as usual. Fills made before the
+  self-match are kept under both policies. Own orders are never skipped over:
+  that would trade through a better price.
+- `OrderResult::status` says what prevention did to the caller's order.
+  `selfTradeCancelledNewest` means the incoming order was stopped at an own
+  order and dropped, so it is not in the book. `selfTradeCancelledOldest`
+  means own resting orders were cancelled and the incoming order carried on
+  as normal. `ok` means prevention did not fire. One call can only report
+  one of them, because a self-match has a single owner and so a single
+  policy. `OrderResult::cancelledOrders` lists the resting orders the book
+  cancelled, in the order it reached them; it is only non-empty under
+  `cancelOldest`.
+- The policy is read when the self-match happens, not when an order was
+  placed. Changing an owner's policy therefore also applies to that owner's
+  orders already resting in the book.
+- A `modifyOrder` that changes price or increases quantity is a new order, so
+  it is the newest one. Under `cancelNewest`, a modify that crosses the
+  owner's own opposite order cancels the original and drops the replacement:
+  the result says `selfTradeCancelledNewest` and the order is gone from the
+  book.
+- The `FOK` check follows the owner's policy, so it predicts what matching
+  will do. Under `cancelOldest` the owner's own resting orders do not count
+  as liquidity. Under `cancelNewest` only the liquidity ahead of the owner's
+  first own order counts. A rejected `FOK` cancels nothing under either
+  policy. It reports `selfTradeCancelledNewest` when the check stopped at an
+  own order, and `ok` when the book simply did not hold enough.
 
 ---
 
@@ -160,8 +219,7 @@ struct OrderEntry {
 which is all matching ever looks at. Each level is a FIFO list, so time
 priority is list order. `bidsData_` / `asksData_` keep running quantity and
 order count per level, updated on every add, fill, cancel and modify; that is
-what makes depth queries and the FOK pre-check O(levels) rather than
-O(orders).
+what makes depth queries O(1) rather than a walk over the level.
 
 `orders_` maps an ID to everything a cancel needs: the order, an iterator to
 its list node, and pointers to its level list and level aggregates. Both
@@ -180,6 +238,12 @@ price, quantity}` at the resting price, and pops the resting order if it is
 now filled. Empty levels are erased immediately, so `begin()` is always a
 live level.
 
+Before filling, each iteration compares the two owners. That one integer
+comparison is all a normal match pays for self-trade prevention; the policy
+lookup only happens on an actual self-match. `cancelNewest` ends the loop,
+and `cancelOldest` cancels the resting order through `cancelOrder` and lets
+the loop read `begin()` again.
+
 ### Complexity
 
 *L* is the number of distinct price levels — not the number of orders. A book
@@ -193,7 +257,7 @@ small no matter how deep the book gets.
 | `cancelOrder`, level becomes empty | O(log L) | the emptied level is erased from the map by price; rare |
 | `modifyOrder` (qty down) | O(1) | hash lookup, `fill()`, aggregate update via stored pointer |
 | `modifyOrder` (otherwise) | cancel + add | |
-| `canFullyFill` (FOK check) | O(L) | walks levels, reads aggregates |
+| `canFullyFill` (FOK check) | O(orders in price range) | walks single orders, because what counts depends on who owns each one |
 | `getLevelQuantity` / `getLevelCount` | O(1) | hash lookup |
 | `getBestBid` / `getBestAsk` | O(1) | `begin()` |
 
@@ -560,14 +624,14 @@ OrderBook/
 │   ├── CMakeLists.txt          # orderbook_lib + `orderbook` example executable
 │   ├── main.cpp                # the Usage example above, runnable
 │   └── lib/
-│       ├── types.hpp           # Price, Quantity, OrderID, Side, OrderType
+│       ├── types.hpp           # Price, Quantity, OrderID, Side, OrderType, SelfTradePolicy, OrderStatus
 │       ├── order.hpp / .cpp
 │       ├── orderbook.hpp / .cpp
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
 │   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config
-│   └── matching_test.cpp       # GTC / IOC / FOK / market matching semantics
+│   └── matching_test.cpp       # GTC / IOC / FOK / market matching semantics, self-trade prevention
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark
     ├── workload.hpp / .cpp     # seeded synthetic order flow
