@@ -70,6 +70,16 @@ const BookConfig& OrderBook::getBookConfig() const {
     return config_;
 }
 
+SelfTradePolicy OrderBook::getSelfTradePolicy(OwnerID ownerID) const {
+    auto it = policies_.find(ownerID);
+    if (it != policies_.end()) return it->second;
+    return config_.defaultSelfTradePolicy;
+}
+
+void OrderBook::setSelfTradePolicy(OwnerID ownerID, SelfTradePolicy policy) {
+    policies_[ownerID] = policy;
+}
+
 void OrderBook::validatePrice(Price price) const {
     if (price < config_.minPrice)
         throw std::invalid_argument("price below minimum");
@@ -79,42 +89,24 @@ void OrderBook::validatePrice(Price price) const {
         throw std::invalid_argument("price not on tick");
 }
 
-Trades OrderBook::match(OrderPointer incoming) {
-    Trades trades;
-
+bool OrderBook::match(OrderPointer incoming, OrderResult& result) {
     while (incoming->getRemainingQuantity() > 0) {
         if (incoming->getSide() == Side::buy) {
             if (asks_.empty() || incoming->getPrice() < asks_.begin()->first) break;
-            matchTop(incoming, asks_, asksData_, trades);
+            if (!matchTop(incoming, asks_, asksData_, result)) return false;
         } else {
             if (bids_.empty() || incoming->getPrice() > bids_.begin()->first) break;
-            matchTop(incoming, bids_, bidsData_, trades);
+            if (!matchTop(incoming, bids_, bidsData_, result)) return false;
         }
     }
 
-    return trades;
+    return true;
 }
 
 // O(n) so that updates can be O(1)
 bool OrderBook::canFullyFill(OrderPointer order) const {
-    Quantity qty = order->getRemainingQuantity();
-
-    if (order->getSide() == Side::buy) {
-        if (asks_.empty()) return false;
-        for (const auto& [price, _] : asks_) {
-            if (price > order->getPrice()) break;
-            if (asksData_.at(price).qty_ >= qty) return true;
-            qty -= asksData_.at(price).qty_;
-        }
-    } else {
-        if (bids_.empty()) return false;
-        for (const auto& [price, _] : bids_) {
-            if (price < order->getPrice()) break;
-            if (bidsData_.at(price).qty_ >= qty) return true;
-            qty -= bidsData_.at(price).qty_;
-        }
-    }
-    return false;
+    if (order->getSide() == Side::buy) return canFullyFillAgainst(order, asks_);
+    return canFullyFillAgainst(order, bids_);
 }
 
 OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
@@ -128,10 +120,13 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
     if (type == OrderType::FOK && !canFullyFill(incoming))
         return {id, {}};
 
-    Trades trades = match(incoming);
+    OrderResult result {id, {}};
+
+    if (!match(incoming, result))
+        return result;
 
     if (type == OrderType::IOC && !incoming->isFilled())
-        return {incoming->getID(), trades};
+        return result;
 
     if (!incoming->isFilled()) {
         auto& list  = (side == Side::buy) ? bids_[price]     : asks_[price];
@@ -142,7 +137,7 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
         orders_[id] = OrderEntry{ incoming, std::prev(list.end()), &list, &level };
     }
 
-    return {incoming->getID(), trades};
+    return result;
 }
 
 OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {

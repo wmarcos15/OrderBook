@@ -20,6 +20,16 @@ enum class OrderType {
     IOC
 };
 
+enum class SelfTradePolicy {
+    cancelOldest,
+    cancelNewest
+};
+
+enum class OrderStatus {
+    ok,
+    selfTradePrevented
+};
+
 class Order; // forward declaration
 using OrderPointer = std::shared_ptr<Order>;
 using OrderPointers = std::list<OrderPointer>;

@@ -17,6 +17,8 @@ using Trades = std::vector<Trade>;
 struct OrderResult {
     OrderID orderID;
     Trades  trades;
+    OrderStatus status {OrderStatus::ok};
+    std::vector<OrderID> cancelledOrders = {};
 };
 
 void printTrade(const Trade& trade);

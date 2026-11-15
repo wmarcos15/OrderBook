@@ -14,6 +14,7 @@ struct BookConfig {
     Price tickSize {1};
     Price minPrice {1};
     Price maxPrice {100'000};
+    SelfTradePolicy defaultSelfTradePolicy {SelfTradePolicy::cancelNewest};
 };
 
 class OrderBook {
@@ -49,19 +50,32 @@ class OrderBook {
 
         void validatePrice(Price price) const;
 
-        Trades match(OrderPointer incoming);
+        bool match(OrderPointer incoming, OrderResult& result);
         bool canFullyFill(OrderPointer order) const;
 
         using OrderIterator = std::unordered_map<OrderID, OrderEntry>::iterator;
         OrderIterator findOrder(OrderID id);
 
+        std::unordered_map<OwnerID, SelfTradePolicy> policies_;
+
         template<typename MapType>
-            void matchTop(OrderPointer incoming, MapType& opposite, 
+            bool matchTop(OrderPointer incoming, MapType& opposite, 
                     std::unordered_map<Price, LevelData>& oppositeData, 
-                    Trades& trades) {
+                    OrderResult& result) {
 
                 auto& [bestPrice, oppositeList] = *opposite.begin();
                 OrderPointer resting = oppositeList.front();
+
+                if (resting->getOwnerID() == incoming->getOwnerID()) {
+                    result.status = OrderStatus::selfTradePrevented;
+                    if (getSelfTradePolicy(incoming->getOwnerID()) == SelfTradePolicy::cancelNewest)
+                        return false;
+
+                    OrderID restingID = resting->getID();
+                    cancelOrder(restingID);
+                    result.cancelledOrders.push_back(restingID);
+                    return true;
+                }
 
                 Quantity qty = std::min(incoming->getRemainingQuantity(), resting->getRemainingQuantity());
                 incoming->fill(qty);
@@ -74,7 +88,7 @@ class OrderBook {
                 OrderID askID = incomingIsBuy ? resting->getID() : incoming->getID();
                 OwnerID bidOwner = incomingIsBuy ? incoming->getOwnerID() : resting->getOwnerID();
                 OwnerID askOwner = incomingIsBuy ? resting->getOwnerID() : incoming->getOwnerID();
-                trades.push_back({ bidID, askID, bestPrice, qty, bidOwner, askOwner });
+                result.trades.push_back({ bidID, askID, bestPrice, qty, bidOwner, askOwner });
 
                 if (resting->isFilled()) {
                     oppositeData[bestPrice].count_--;
@@ -85,6 +99,30 @@ class OrderBook {
                     opposite.erase(bestPrice);
                     oppositeData.erase(bestPrice);
                 }
+                return true;
+            }
+
+        // Walks single orders, not level totals: what counts depends on who owns each one
+        template<typename MapType>
+            bool canFullyFillAgainst(OrderPointer order, const MapType& opposite) const {
+                Quantity qty = order->getRemainingQuantity();
+                OwnerID owner = order->getOwnerID();
+                bool isBuy = order->getSide() == Side::buy;
+                bool stopAtOwn = getSelfTradePolicy(owner) == SelfTradePolicy::cancelNewest;
+
+                for (const auto& [price, list] : opposite) {
+                    if (isBuy ? price > order->getPrice() : price < order->getPrice()) break;
+
+                    for (const auto& resting : list) {
+                        if (resting->getOwnerID() == owner) {
+                            if (stopAtOwn) return false;
+                            continue;
+                        }
+                        if (resting->getRemainingQuantity() >= qty) return true;
+                        qty -= resting->getRemainingQuantity();
+                    }
+                }
+                return false;
             }
 
     public:
@@ -98,6 +136,9 @@ class OrderBook {
         Quantity getLevelQuantity(Side side, Price price) const;
         std::size_t getLevelCount(Side side, Price price) const;
         const BookConfig& getBookConfig() const;
+        SelfTradePolicy getSelfTradePolicy(OwnerID ownerID) const;
+
+        void setSelfTradePolicy(OwnerID ownerID, SelfTradePolicy policy);
 
         OrderResult addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
         OrderResult addMarketOrder(OwnerID owner, Side side, Quantity qty);
