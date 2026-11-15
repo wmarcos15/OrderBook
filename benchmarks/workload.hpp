@@ -4,12 +4,12 @@
 #include <vector>
 
 struct OrderSpec {
-    bool      isMarket;
-    OrderType type;
-    Price     price;
-    Quantity  qty;
-    Side      side;
-    OwnerID   owner;
+    bool                 isMarket;
+    orderbook::OrderType type;
+    orderbook::Price     price;
+    orderbook::Quantity  qty;
+    orderbook::Side      side;
+    orderbook::OwnerID   owner;
 };
 
 using OrderSpecs = std::vector<OrderSpec>;

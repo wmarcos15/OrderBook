@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace orderbook {
+
 struct BookConfig {
     Price tickSize {1};
     Price minPrice {1};
@@ -185,3 +187,5 @@ class OrderBook {
         std::optional<OrderResult> modifyOrder(OrderID orderID, Price newPrice, Quantity newQty);
 
 };
+
+} // namespace orderbook

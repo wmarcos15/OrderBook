@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <iostream>
 
+namespace orderbook {
+
 void printTrade(const Trade& trade) {
     std::cout << "[✓] MATCH | BUY #" << trade.bidID 
         << " vs SELL #" << trade.askID 
@@ -17,3 +19,4 @@ void const printTrades(const Trades& trades) {
     }
 }
 
+} // namespace orderbook

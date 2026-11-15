@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <vector>
 
+using namespace orderbook;
+
 // Every buy order belongs to BUYER and every sell order to SELLER, so a trade in
 // these tests is never between an owner and itself.
 constexpr OwnerID BUYER  = 1;

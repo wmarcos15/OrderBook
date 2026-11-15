@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <string>
 
+namespace orderbook {
+
 OrderBook::OrderBook(BookConfig config) : config_(config) {
     if (config.tickSize <= 0)
         throw std::invalid_argument("tickSize must be greater than 0");
@@ -221,3 +223,4 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
 
 }
 
+} // namespace orderbook

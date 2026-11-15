@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <random>
 
+using namespace orderbook;
+
 constexpr int TYPE_ROLL_MAX = 99;
 constexpr int GTC_THRESHOLD = 90;
 constexpr int MARKET_THRESHOLD = 95;
