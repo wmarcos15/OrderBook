@@ -104,9 +104,9 @@ bool OrderBook::match(OrderPointer incoming, OrderResult& result) {
 }
 
 // O(n) so that updates can be O(1)
-bool OrderBook::canFullyFill(OrderPointer order) const {
-    if (order->getSide() == Side::buy) return canFullyFillAgainst(order, asks_);
-    return canFullyFillAgainst(order, bids_);
+bool OrderBook::canFullyFill(OrderPointer order, OrderResult& result) const {
+    if (order->getSide() == Side::buy) return canFullyFillAgainst(order, asks_, result);
+    return canFullyFillAgainst(order, bids_, result);
 }
 
 OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
@@ -117,10 +117,10 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
     OrderID id = nextID_++;
     OrderPointer incoming = std::make_shared<Order>(id, owner, type, side, price, qty);
 
-    if (type == OrderType::FOK && !canFullyFill(incoming))
-        return {id, {}};
-
     OrderResult result {id, {}};
+
+    if (type == OrderType::FOK && !canFullyFill(incoming, result))
+        return result;
 
     if (!match(incoming, result))
         return result;

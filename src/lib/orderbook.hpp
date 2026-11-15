@@ -51,7 +51,7 @@ class OrderBook {
         void validatePrice(Price price) const;
 
         bool match(OrderPointer incoming, OrderResult& result);
-        bool canFullyFill(OrderPointer order) const;
+        bool canFullyFill(OrderPointer order, OrderResult& result) const;
 
         using OrderIterator = std::unordered_map<OrderID, OrderEntry>::iterator;
         OrderIterator findOrder(OrderID id);
@@ -67,12 +67,14 @@ class OrderBook {
                 OrderPointer resting = oppositeList.front();
 
                 if (resting->getOwnerID() == incoming->getOwnerID()) {
-                    result.status = OrderStatus::selfTradePrevented;
-                    if (getSelfTradePolicy(incoming->getOwnerID()) == SelfTradePolicy::cancelNewest)
+                    if (getSelfTradePolicy(incoming->getOwnerID()) == SelfTradePolicy::cancelNewest) {
+                        result.status = OrderStatus::selfTradeCancelledNewest;
                         return false;
+                    }
 
                     OrderID restingID = resting->getID();
                     cancelOrder(restingID);
+                    result.status = OrderStatus::selfTradeCancelledOldest;
                     result.cancelledOrders.push_back(restingID);
                     return true;
                 }
@@ -104,7 +106,7 @@ class OrderBook {
 
         // Walks single orders, not level totals: what counts depends on who owns each one
         template<typename MapType>
-            bool canFullyFillAgainst(OrderPointer order, const MapType& opposite) const {
+            bool canFullyFillAgainst(OrderPointer order, const MapType& opposite, OrderResult& result) const {
                 Quantity qty = order->getRemainingQuantity();
                 OwnerID owner = order->getOwnerID();
                 bool isBuy = order->getSide() == Side::buy;
@@ -115,8 +117,9 @@ class OrderBook {
 
                     for (const auto& resting : list) {
                         if (resting->getOwnerID() == owner) {
-                            if (stopAtOwn) return false;
-                            continue;
+                            if (!stopAtOwn) continue;
+                            result.status = OrderStatus::selfTradeCancelledNewest;
+                            return false;
                         }
                         if (resting->getRemainingQuantity() >= qty) return true;
                         qty -= resting->getRemainingQuantity();

@@ -27,7 +27,8 @@ enum class SelfTradePolicy {
 
 enum class OrderStatus {
     ok,
-    selfTradePrevented
+    selfTradeCancelledNewest,
+    selfTradeCancelledOldest
 };
 
 class Order; // forward declaration

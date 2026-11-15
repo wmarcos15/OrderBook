@@ -791,7 +791,7 @@ TEST_F(MatchingTest, STP_CancelNewest_GTCBuyHitsOwnAsk_NoTradeAndStatusSet) {
     auto result = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 100, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_TRUE(result.cancelledOrders.empty());
 }
 
@@ -819,7 +819,7 @@ TEST_F(MatchingTest, STP_CancelNewest_GTCSellHitsOwnBid_NoTradeAndStatusSet) {
     auto result = book_.addOrder(OWNER, OrderType::GTC, Side::sell, 100, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_TRUE(result.cancelledOrders.empty());
 }
 
@@ -847,7 +847,7 @@ TEST_F(MatchingTest, STP_CancelNewest_IOCHitsOwnAsk_NoTradeAndRestingUntouched) 
     auto result = book_.addOrder(OWNER, OrderType::IOC, Side::buy, 100, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.size(), 1);
     ASSERT_NE(book_.getOrder(askID), nullptr);
     EXPECT_EQ(book_.getOrder(askID)->getRemainingQuantity(), 50);
@@ -858,7 +858,7 @@ TEST_F(MatchingTest, STP_CancelNewest_MarketHitsOwnAsk_NoTradeAndRestingUntouche
     auto result = book_.addMarketOrder(OWNER, Side::buy, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.size(), 1);
     ASSERT_NE(book_.getOrder(askID), nullptr);
     EXPECT_EQ(book_.getOrder(askID)->getRemainingQuantity(), 50);
@@ -869,7 +869,7 @@ TEST_F(MatchingTest, STP_CancelNewest_MarketHitsOwnBid_NoTradeAndRestingUntouche
     auto result = book_.addMarketOrder(OWNER, Side::sell, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.size(), 1);
     ASSERT_NE(book_.getOrder(bidID), nullptr);
     EXPECT_EQ(book_.getOrder(bidID)->getRemainingQuantity(), 50);
@@ -883,7 +883,7 @@ TEST_F(MatchingTest, STP_CancelNewest_OtherAheadOfOwn_FillKeptThenStops) {
     ASSERT_EQ(result.trades.size(), 1);
     EXPECT_EQ(result.trades[0].quantity, 30);
     EXPECT_EQ(result.trades[0].askOwner, OTHER);
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.getOrder(result.orderID), nullptr);
     ASSERT_NE(book_.getOrder(ownID), nullptr);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 100), 50);
@@ -897,7 +897,7 @@ TEST_F(MatchingTest, STP_CancelNewest_IOCOtherAheadOfOwn_FillKeptThenStops) {
 
     ASSERT_EQ(result.trades.size(), 1);
     EXPECT_EQ(result.trades[0].quantity, 30);
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 100), 50);
 }
 
@@ -909,7 +909,7 @@ TEST_F(MatchingTest, STP_CancelNewest_MarketOtherAheadOfOwn_FillKeptThenStops) {
     ASSERT_EQ(result.trades.size(), 1);
     EXPECT_EQ(result.trades[0].quantity, 30);
     EXPECT_EQ(result.trades[0].price, 101);
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.getLevelQuantity(Side::buy, 100), 50);
 }
 
@@ -919,7 +919,7 @@ TEST_F(MatchingTest, STP_CancelNewest_OwnAtBestOtherBehind_DoesNotTradeThrough) 
     auto result = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 101, 80);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.getBestBid(), nullptr);
     ASSERT_NE(book_.getOrder(ownID), nullptr);
     ASSERT_NE(book_.getOrder(otherID), nullptr);
@@ -936,7 +936,7 @@ TEST_F(MatchingTest, STP_CancelOldest_BuyHitsOwnAsk_RestingCancelledAndReported)
     auto result = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 100, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledOldest);
     EXPECT_EQ(result.cancelledOrders, std::vector<OrderID>{askID});
     EXPECT_EQ(book_.getOrder(askID), nullptr);
 }
@@ -947,7 +947,7 @@ TEST_F(MatchingTest, STP_CancelOldest_SellHitsOwnBid_RestingCancelledAndReported
     auto result = book_.addOrder(OWNER, OrderType::GTC, Side::sell, 100, 75);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledOldest);
     EXPECT_EQ(result.cancelledOrders, std::vector<OrderID>{bidID});
     EXPECT_EQ(book_.getOrder(bidID), nullptr);
 }
@@ -979,7 +979,7 @@ TEST_F(MatchingTest, STP_CancelOldest_IOCRemainderDiscarded) {
     auto result = book_.addOrder(OWNER, OrderType::IOC, Side::buy, 100, 75);
 
     EXPECT_EQ(result.cancelledOrders, std::vector<OrderID>{askID});
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledOldest);
     EXPECT_TRUE(book_.empty());
 }
 
@@ -1015,7 +1015,7 @@ TEST_F(MatchingTest, STP_CancelOldest_OwnAtBestOtherBehind_ContinuesAndRemainder
     book_.addOrder(OTHER, OrderType::GTC, Side::sell, 101, 30);
     auto result = book_.addOrder(OWNER, OrderType::GTC, Side::buy, 101, 80);
 
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledOldest);
     EXPECT_EQ(result.cancelledOrders, std::vector<OrderID>{ownID});
     ASSERT_EQ(result.trades.size(), 1);
     EXPECT_EQ(result.trades[0].quantity, 30);
@@ -1074,7 +1074,7 @@ TEST_F(MatchingTest, STP_FOK_CancelNewest_OnlyOwnLiquidity_RejectedBookUntouched
     auto result = book_.addOrder(OWNER, OrderType::FOK, Side::buy, 100, 50);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::ok);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_TRUE(result.cancelledOrders.empty());
     ASSERT_NE(book_.getOrder(askID), nullptr);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 100), 50);
@@ -1101,7 +1101,7 @@ TEST_F(MatchingTest, STP_FOK_CancelNewest_OwnOrderBlocksLiquidityBehind_Rejected
     auto result = book_.addOrder(OWNER, OrderType::FOK, Side::buy, 101, 100);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::ok);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.size(), 3);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 100), 80);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 101), 100);
@@ -1117,7 +1117,7 @@ TEST_F(MatchingTest, STP_FOK_CancelOldest_OwnOrderSkipped_FilledFromOthers) {
     ASSERT_EQ(result.trades.size(), 2);
     EXPECT_EQ(result.trades[0].quantity, 30);
     EXPECT_EQ(result.trades[1].quantity, 70);
-    EXPECT_EQ(result.status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledOldest);
     EXPECT_EQ(result.cancelledOrders, std::vector<OrderID>{ownID});
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 100), 0);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 101), 30);
@@ -1130,7 +1130,7 @@ TEST_F(MatchingTest, STP_FOK_CancelNewest_SellOwnBidBlocksLiquidityBehind_Reject
     auto result = book_.addOrder(OWNER, OrderType::FOK, Side::sell, 100, 100);
 
     EXPECT_TRUE(result.trades.empty());
-    EXPECT_EQ(result.status, OrderStatus::ok);
+    EXPECT_EQ(result.status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.size(), 3);
     EXPECT_EQ(book_.getLevelQuantity(Side::buy, 101), 80);
     EXPECT_EQ(book_.getLevelQuantity(Side::buy, 100), 100);
@@ -1170,8 +1170,26 @@ TEST_F(MatchingTest, STP_FOK_CancelOldest_NotEnoughWithoutOwn_RejectedNothingCan
 
     EXPECT_TRUE(result.trades.empty());
     EXPECT_TRUE(result.cancelledOrders.empty());
+    EXPECT_EQ(result.status, OrderStatus::ok);
     EXPECT_EQ(book_.getLevelQuantity(Side::sell, 100), 80);
     EXPECT_EQ(book_.getLevelCount(Side::sell, 100), 2);
+}
+
+TEST_F(MatchingTest, STP_FOK_NoOwnOrders_RejectedForLiquidityStatusOk) {
+    book_.addOrder(OTHER, OrderType::GTC, Side::sell, 100, 30);
+    auto result = book_.addOrder(OWNER, OrderType::FOK, Side::buy, 100, 60);
+
+    EXPECT_TRUE(result.trades.empty());
+    EXPECT_EQ(result.status, OrderStatus::ok);
+}
+
+TEST_F(MatchingTest, STP_FOK_CancelNewest_OwnOrderBeyondLimitPrice_RejectedStatusOk) {
+    book_.addOrder(OTHER, OrderType::GTC, Side::sell, 100, 30);
+    book_.addOrder(OWNER, OrderType::GTC, Side::sell, 101, 50);
+    auto result = book_.addOrder(OWNER, OrderType::FOK, Side::buy, 100, 60);
+
+    EXPECT_TRUE(result.trades.empty());
+    EXPECT_EQ(result.status, OrderStatus::ok);
 }
 
 // --------------------------
@@ -1241,7 +1259,7 @@ TEST_F(MatchingTest, STP_CancelNewest_ModifyCrossesOwnAsk_OriginalAndNewOrderGon
 
     ASSERT_TRUE(result.has_value());
     EXPECT_TRUE(result->trades.empty());
-    EXPECT_EQ(result->status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result->status, OrderStatus::selfTradeCancelledNewest);
     EXPECT_EQ(book_.getOrder(bidID), nullptr);
     EXPECT_EQ(book_.getOrder(result->orderID), nullptr);
     EXPECT_EQ(book_.getBestBid(), nullptr);
@@ -1256,7 +1274,7 @@ TEST_F(MatchingTest, STP_CancelOldest_ModifyCrossesOwnAsk_AskCancelledNewOrderRe
     auto result = book_.modifyOrder(bidID, 100, 50);
 
     ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result->status, OrderStatus::selfTradePrevented);
+    EXPECT_EQ(result->status, OrderStatus::selfTradeCancelledOldest);
     EXPECT_EQ(result->cancelledOrders, std::vector<OrderID>{askID});
     EXPECT_EQ(book_.getOrder(askID), nullptr);
     ASSERT_NE(book_.getOrder(result->orderID), nullptr);
