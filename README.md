@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (223 tests) and a Google Benchmark suite that measures what
+GoogleTest suite (225 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -59,8 +59,8 @@ alongside them and explains the difference.
   override it.
 - **O(1) depth queries** — `getLevelQuantity`, `getLevelCount` — from
   per-level aggregates maintained incrementally, never by walking a level.
-- **223 unit tests** across two suites: 87 on book state (resting, level data,
-  cancel, modify, argument validation, book configuration, owners) and 136 on
+- **225 unit tests** across two suites: 87 on book state (resting, level data,
+  cancel, modify, argument validation, book configuration, owners) and 138 on
   matching semantics (GTC partial/full fills and sweeps, time priority, trade
   contents and owners, IOC, FOK, market orders, self-trade prevention).
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
@@ -113,9 +113,6 @@ book.addOrder(BOB, OrderType::GTC, Side::buy, 11'005, 10);   // throws: above ma
 book.getBookConfig().tickSize;   // 5
 ```
 
-That example is [`src/main.cpp`](src/main.cpp), built as the `orderbook`
-target — run `./build/src/orderbook` to see it execute.
-
 Self-trade prevention is on by default. The policy comes from
 `BookConfig::defaultSelfTradePolicy` (`cancelNewest` unless set otherwise)
 and can be overridden per owner:
@@ -128,15 +125,20 @@ OrderResult ask = book.addOrder(ALICE, OrderType::GTC, Side::sell, 10'001, 50);
 OrderResult bid = book.addOrder(ALICE, OrderType::GTC, Side::buy, 10'001, 75);
 
 bid.trades.empty();   // true: no trade against her own order
-bid.status;           // OrderStatus::selfTradePrevented
+bid.status;           // OrderStatus::selfTradeCancelledNewest
 // cancelNewest: the buy is dropped, the sell still rests with 50.
 
 book.setSelfTradePolicy(ALICE, SelfTradePolicy::cancelOldest);
 bid = book.addOrder(ALICE, OrderType::GTC, Side::buy, 10'001, 75);
 
+bid.status;           // OrderStatus::selfTradeCancelledOldest
 bid.cancelledOrders;  // { ask.orderID }: the resting sell was cancelled
 // cancelOldest: matching carries on, and the 75 left over rest at 10 001.
 ```
+
+The first example and the self-trade one are [`src/main.cpp`](src/main.cpp),
+built as the `orderbook` target — run `./build/src/orderbook` to see them
+execute.
 
 Semantics worth knowing:
 
@@ -168,21 +170,29 @@ Semantics worth knowing:
   continues, so a `GTC` remainder rests as usual. Fills made before the
   self-match are kept under both policies. Own orders are never skipped over:
   that would trade through a better price.
-- `OrderResult::status` is `selfTradePrevented` whenever prevention fired
-  during the call, under either policy, and `ok` otherwise.
-  `OrderResult::cancelledOrders` lists the resting orders the book cancelled,
-  in the order it reached them; it is only non-empty under `cancelOldest`.
+- `OrderResult::status` says what prevention did to the caller's order.
+  `selfTradeCancelledNewest` means the incoming order was stopped at an own
+  order and dropped, so it is not in the book. `selfTradeCancelledOldest`
+  means own resting orders were cancelled and the incoming order carried on
+  as normal. `ok` means prevention did not fire. One call can only report
+  one of them, because a self-match has a single owner and so a single
+  policy. `OrderResult::cancelledOrders` lists the resting orders the book
+  cancelled, in the order it reached them; it is only non-empty under
+  `cancelOldest`.
 - The policy is read when the self-match happens, not when an order was
   placed. Changing an owner's policy therefore also applies to that owner's
   orders already resting in the book.
 - A `modifyOrder` that changes price or increases quantity is a new order, so
   it is the newest one. Under `cancelNewest`, a modify that crosses the
   owner's own opposite order cancels the original and drops the replacement:
-  the result says `selfTradePrevented` and the order is gone from the book.
+  the result says `selfTradeCancelledNewest` and the order is gone from the
+  book.
 - The `FOK` check follows the owner's policy, so it predicts what matching
   will do. Under `cancelOldest` the owner's own resting orders do not count
   as liquidity. Under `cancelNewest` only the liquidity ahead of the owner's
-  first own order counts. A rejected `FOK` cancels nothing and reports `ok`.
+  first own order counts. A rejected `FOK` cancels nothing under either
+  policy. It reports `selfTradeCancelledNewest` when the check stopped at an
+  own order, and `ok` when the book simply did not hold enough.
 
 ---
 

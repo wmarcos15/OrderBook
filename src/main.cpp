@@ -31,5 +31,21 @@ int main() {
 
     book.cancelOrder(moved.orderID);
     std::cout << "Cancelled #" << moved.orderID
-        << " | book empty: " << std::boolalpha << book.empty() << '\n';
+        << " | book empty: " << std::boolalpha << book.empty() << "\n\n";
+
+    // Self-trade prevention
+    OrderResult ownAsk = book.addOrder(ALICE, OrderType::GTC, Side::sell, 10'001, 50);
+    OrderResult ownBid = book.addOrder(ALICE, OrderType::GTC, Side::buy, 10'001, 75);
+    std::cout << "Alice rests SELL #" << ownAsk.orderID << " and sends BUY #"
+        << ownBid.orderID << " across it (cancelNewest)\n"
+        << "Trades: " << ownBid.trades.size()
+        << " | BUY dropped: " << (book.getOrder(ownBid.orderID) == nullptr)
+        << " | SELL still resting: " << (book.getOrder(ownAsk.orderID) != nullptr) << "\n\n";
+
+    book.setSelfTradePolicy(ALICE, SelfTradePolicy::cancelOldest);
+    ownBid = book.addOrder(ALICE, OrderType::GTC, Side::buy, 10'001, 75);
+    std::cout << "Alice sends BUY #" << ownBid.orderID << " again (cancelOldest)\n"
+        << "Trades: " << ownBid.trades.size()
+        << " | cancelled SELL #" << ownBid.cancelledOrders.front()
+        << " | BUY rests with " << book.getBestBid()->getRemainingQuantity() << " units\n";
 }
