@@ -270,7 +270,7 @@ TEST_F(MatchingTest, GTC_TradeStruct_QuantityCorrectOnPartialFill) {
 // --------------------------
 TEST_F(MatchingTest, FOK_BidCanFullyFill_TradesGenerated) {
     book_.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 150);
-    auto trades = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 150).trades;
+    auto trades = book_.addOrder(BUYER, OrderType::FOK, Side::buy, 100, 150).trades;
     ASSERT_FALSE(trades.empty());
 }
 
