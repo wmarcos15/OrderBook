@@ -96,8 +96,8 @@ class OrderBook {
                     orders_.erase(resting->getID());
                 }
                 if (oppositeList.empty()) {
-                    opposite.erase(bestPrice);
                     oppositeData.erase(bestPrice);
+                    opposite.erase(opposite.begin());
                 }
                 return true;
             }
