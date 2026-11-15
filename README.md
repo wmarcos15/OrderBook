@@ -75,7 +75,8 @@ alongside them and explains the difference.
 ## Usage
 
 The library is `orderbook_lib`; include `orderbook.hpp` and you get the whole
-API.
+API. To link it from your own project, see
+[Using it from another CMake project](#using-it-from-another-cmake-project).
 
 ```cpp
 #include "orderbook.hpp"
@@ -326,7 +327,8 @@ allocator, which is why the working set does not stay cache-resident.
 
 Requires CMake ≥ 3.25 and a C++20 compiler. GoogleTest (v1.14.0) and Google
 Benchmark (v1.8.3) are fetched automatically with `FetchContent` on first
-configure.
+configure. They are only fetched when building this repository itself, not
+when it is used as a dependency.
 
 ```bash
 cmake -DCMAKE_BUILD_TYPE=Release -S . -B build
@@ -363,6 +365,31 @@ python3 plot.py                                       # reads results.json, writ
 
 `plot.py` accepts the input and output paths as optional positional
 arguments.
+
+### Using it from another CMake project
+
+Pull the repository in with `FetchContent` (or `add_subdirectory` on a local
+copy) and link `orderbook_lib`:
+
+```cmake
+include(FetchContent)
+
+FetchContent_Declare(
+    orderbook
+    GIT_REPOSITORY https://github.com/wmarcos15/OrderBook.git
+    GIT_TAG main
+)
+
+FetchContent_MakeAvailable(orderbook)
+
+target_link_libraries(my_target PRIVATE orderbook_lib)
+```
+
+That gives `my_target` the include path for `orderbook.hpp` and compiles it
+as C++20, which the library requires. Nothing else comes along: the tests,
+the benchmarks, the example executable and the GoogleTest / Google Benchmark
+downloads are only set up when OrderBook is the top-level project, so they
+do not appear in your build or in your `ctest` run.
 
 ---
 
@@ -633,7 +660,7 @@ How the workload parameters relate to these sources:
 
 ```
 OrderBook/
-├── CMakeLists.txt              # fetches GoogleTest + Google Benchmark
+├── CMakeLists.txt              # tests, benchmarks and their dependencies only as the top-level project
 ├── src/
 │   ├── CMakeLists.txt          # orderbook_lib + `orderbook` example executable
 │   ├── main.cpp                # the Usage example above, runnable

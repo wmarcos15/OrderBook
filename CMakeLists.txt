@@ -8,31 +8,36 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_subdirectory(src)
 
-include(FetchContent)
+# Tests, benchmarks and their dependencies are only for building OrderBook itself.
+# A project that pulls this one in with add_subdirectory or FetchContent gets
+# orderbook_lib and nothing else.
+if(PROJECT_IS_TOP_LEVEL)
+    include(FetchContent)
 
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.14.0
-    SYSTEM
-)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+        SYSTEM
+    )
 
-FetchContent_Declare(
-    googlebenchmark
-    GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG v1.8.3
-    SYSTEM
-)
+    FetchContent_Declare(
+        googlebenchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.8.3
+        SYSTEM
+    )
 
-# For windows
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    # For windows
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-# Disable benchmark's own tests
-set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    # Disable benchmark's own tests
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(googletest googlebenchmark)
+    FetchContent_MakeAvailable(googletest googlebenchmark)
 
-enable_testing()
-add_subdirectory(tests)
-add_subdirectory(benchmarks)
+    enable_testing()
+    add_subdirectory(tests)
+    add_subdirectory(benchmarks)
+endif()
