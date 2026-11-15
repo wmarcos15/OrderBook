@@ -19,7 +19,15 @@ int main() {
         << book.getLevelQuantity(Side::buy, 10'002) << " units across "
         << book.getLevelCount(Side::buy, 10'002) << " order(s)\n"
         << "Best bid: €" << book.getBestBid()->getPrice()
-        << " for " << book.getBestBid()->getRemainingQuantity() << " units\n\n";
+        << " for " << book.getBestBid()->getRemainingQuantity() << " units\n";
+
+    // Top levels of the bid side, best first
+    for (const LevelView& level : book.getDepth(Side::buy, 5)) {
+        std::cout << "Bid depth: €" << level.price << " | "
+            << level.quantity << " units across "
+            << level.count << " order(s)\n";
+    }
+    std::cout << '\n';
 
     OrderResult trimmed = book.modifyOrder(bid.orderID, 10'002, 10).value();
     std::cout << "Trimmed #" << bid.orderID << " to 10 units | ID after modify: #"
