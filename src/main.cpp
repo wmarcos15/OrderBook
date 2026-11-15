@@ -2,6 +2,8 @@
 
 #include <iostream>
 
+using namespace orderbook;
+
 int main() {
     constexpr OwnerID ALICE = 1;
     constexpr OwnerID BOB   = 2;

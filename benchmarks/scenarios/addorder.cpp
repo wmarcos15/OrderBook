@@ -3,6 +3,8 @@
 #include <benchmark/benchmark.h>
 #include <cstddef>
 
+using namespace orderbook;
+
 static void BM_AddOrder(benchmark::State& state) {
     constexpr uint64_t WORKLOAD_SIZE = 1'000'000;
     constexpr uint32_t SEED = 42;

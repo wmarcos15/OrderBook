@@ -3,6 +3,8 @@
 #include <benchmark/benchmark.h>
 #include <cstddef>
 
+using namespace orderbook;
+
 static void BM_CancelOrderMiss(benchmark::State& state) {
     OrderBook book;
     OrderID id {0};

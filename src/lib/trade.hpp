@@ -3,6 +3,8 @@
 
 #include <vector>
 
+namespace orderbook {
+
 struct Trade {
     OrderID bidID;
     OrderID askID;
@@ -24,3 +26,4 @@ struct OrderResult {
 void printTrade(const Trade& trade);
 void const printTrades(const Trades& trades);
 
+} // namespace orderbook

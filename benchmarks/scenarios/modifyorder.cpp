@@ -2,6 +2,8 @@
 #include "orderbook.hpp"
 #include "types.hpp"
 
+using namespace orderbook;
+
 // The pools are all on one side and never cross, so one owner is enough.
 constexpr OwnerID OWNER = 1;
 

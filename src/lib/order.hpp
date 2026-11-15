@@ -1,6 +1,8 @@
 #pragma once
 #include "types.hpp"
 
+namespace orderbook {
+
 class Order {
     private:
         OrderID id_;
@@ -24,3 +26,5 @@ class Order {
         bool isFilled() const;
         void fill(Quantity qty);
 };
+
+} // namespace orderbook

@@ -3,6 +3,8 @@
 #include <list>
 #include <memory>
 
+namespace orderbook {
+
 using Price = std::int32_t;
 using Quantity = std::uint32_t;
 using OrderID = std::uint64_t;
@@ -35,3 +37,4 @@ class Order; // forward declaration
 using OrderPointer = std::shared_ptr<Order>;
 using OrderPointers = std::list<OrderPointer>;
 
+} // namespace orderbook

@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (244 tests) and a Google Benchmark suite that measures what
+GoogleTest suite (255 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -45,7 +45,8 @@ alongside them and explains the difference.
   discards the rest), `FOK` (fills completely or does nothing), and market
   orders.
 - **Operations:** `addOrder`, `addMarketOrder`, `cancelOrder`, `modifyOrder`.
-  Cancel and in-place quantity reduction are O(1) — no lookup by price.
+  Cancel and in-place quantity reduction are O(1) — no lookup by price,
+  except when a cancel empties its level and the level itself is removed.
 - **Configurable price grid.** A `BookConfig` sets the tick size and the
   legal price band; prices off the tick or outside the band are rejected
   before anything in the book changes.
@@ -62,11 +63,11 @@ alongside them and explains the difference.
 - **Depth snapshot.** `getDepth` returns the top N levels of a side in one
   call, best level first, each with its price, total quantity and order
   count.
-- **244 unit tests** across two suites: 106 on book state (resting, level
+- **255 unit tests** across two suites: 112 on book state (resting, level
   data, cancel, modify, argument validation, book configuration, owners,
-  depth snapshot) and 138 on matching semantics (GTC partial/full fills and
-  sweeps, time priority, trade contents and owners, IOC, FOK, market orders,
-  self-trade prevention).
+  depth snapshot, copy and move) and 143 on matching semantics (GTC
+  partial/full fills and sweeps, time priority, trade contents and owners,
+  IOC, FOK, market orders, self-trade prevention).
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -75,11 +76,16 @@ alongside them and explains the difference.
 ## Usage
 
 The library is `orderbook_lib`; include `orderbook.hpp` and you get the whole
-API. To link it from your own project, see
+API. Everything it declares lives in `namespace orderbook`, so its `Order`,
+`Trade`, `Price` and the rest cannot clash with types of the same name in
+your own code. The examples below import the namespace to stay short. To
+link the library from your own project, see
 [Using it from another CMake project](#using-it-from-another-cmake-project).
 
 ```cpp
 #include "orderbook.hpp"
+
+using namespace orderbook;   // or qualify: orderbook::OrderBook, orderbook::Side, ...
 
 OrderBook book;
 constexpr OwnerID ALICE = 1, BOB = 2;
@@ -165,8 +171,13 @@ Semantics worth knowing:
   and returns a **new** ID; the old one is gone.
 - `addOrder` / `modifyOrder` throw `std::invalid_argument` on zero quantity,
   or on a price below `minPrice`, above `maxPrice`, or not a multiple of
-  `tickSize`. A rejected `addOrder` consumes no ID; a rejected `modifyOrder`
+  `tickSize`. `addMarketOrder` throws on zero quantity too. A rejected
+  `addOrder` or `addMarketOrder` consumes no ID; a rejected `modifyOrder`
   leaves the original order exactly as it was.
+- An `OrderBook` cannot be copied, only moved. Its internal entries point
+  into its own price levels, so a copy would share state with the original;
+  copying is a compile error rather than a silent bug. Pass a book by
+  reference, or `std::move` it.
 - The `OrderBook` constructor throws `std::invalid_argument` if the config is
   inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
   `maxPrice`, or either band edge not a multiple of `tickSize`. `modifyOrder` returns `std::nullopt` for an unknown ID.
@@ -248,7 +259,7 @@ price — it goes straight from the ID to the node.
 `match()` loops while the incoming order has remaining quantity and the
 opposite side's best level is at or through its limit price. Each iteration
 fills against the front of the best level, records a `Trade{bidID, askID,
-price, quantity}` at the resting price, and pops the resting order if it is
+price, quantity, bidOwner, askOwner}` at the resting price, and pops the resting order if it is
 now filled. Empty levels are erased immediately, so `begin()` is always a
 live level.
 
@@ -292,7 +303,8 @@ per cancel.
 index levels into a preallocated array: price becomes an offset, insertion is
 O(1) with no allocation, and adjacent levels share cache lines. That requires
 a bounded, known price range and a fallback for anything outside it.
-`std::map` accepts the full `int32_t` range with no such constraint. Now that
+`BookConfig` now supplies that range, but `std::map` does not depend on it:
+its cost follows the number of levels in use, not the width of the band. Now that
 cancel and friendly modify no longer touch the map at all, the tree is only
 on the `addOrder` path, where the insert is a small part of the total.
 
@@ -377,7 +389,7 @@ include(FetchContent)
 FetchContent_Declare(
     orderbook
     GIT_REPOSITORY https://github.com/wmarcos15/OrderBook.git
-    GIT_TAG main
+    GIT_TAG v2.0.0
 )
 
 FetchContent_MakeAvailable(orderbook)
@@ -660,6 +672,8 @@ How the workload parameters relate to these sources:
 
 ```
 OrderBook/
+├── .github/workflows/ci.yml    # build + tests on Ubuntu and macOS, sanitizers on Ubuntu
+├── LICENSE
 ├── CMakeLists.txt              # tests, benchmarks and their dependencies only as the top-level project
 ├── src/
 │   ├── CMakeLists.txt          # orderbook_lib + `orderbook` example executable

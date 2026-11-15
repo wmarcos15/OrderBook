@@ -2,7 +2,10 @@
 #include "orderbook.hpp"
 #include "types.hpp"
 
+#include <stdexcept>
 #include <vector>
+
+using namespace orderbook;
 
 // Every buy order belongs to BUYER and every sell order to SELLER, so a trade in
 // these tests is never between an owner and itself.
@@ -581,6 +584,31 @@ TEST_F(MatchingTest, Market_AskEmptyBidSide_NothingRests) {
     auto id = book_.addMarketOrder(SELLER, Side::sell, 50).orderID;
     ASSERT_EQ(book_.getOrder(id), nullptr);
     ASSERT_TRUE(book_.empty());
+}
+
+TEST_F(MatchingTest, Market_BidQtyOf0EmptyAskSide_ThrowsInvalidArgument) {
+    ASSERT_THROW(book_.addMarketOrder(BUYER, Side::buy, 0), std::invalid_argument);
+}
+
+TEST_F(MatchingTest, Market_AskQtyOf0EmptyBidSide_ThrowsInvalidArgument) {
+    ASSERT_THROW(book_.addMarketOrder(SELLER, Side::sell, 0), std::invalid_argument);
+}
+
+TEST_F(MatchingTest, Market_BidQtyOf0NonEmptyAskSide_ThrowsInvalidArgument) {
+    book_.addOrder(SELLER, OrderType::GTC, Side::sell, 100, 50);
+    ASSERT_THROW(book_.addMarketOrder(BUYER, Side::buy, 0), std::invalid_argument);
+}
+
+TEST_F(MatchingTest, Market_AskQtyOf0NonEmptyBidSide_ThrowsInvalidArgument) {
+    book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50);
+    ASSERT_THROW(book_.addMarketOrder(SELLER, Side::sell, 0), std::invalid_argument);
+}
+
+// A rejected market order must not burn an order ID, same as a rejected addOrder
+TEST_F(MatchingTest, Market_QtyOf0EmptyBook_NoIDConsumed) {
+    ASSERT_THROW(book_.addMarketOrder(BUYER, Side::buy, 0), std::invalid_argument);
+    auto id = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 50).orderID;
+    ASSERT_EQ(id, 1);
 }
 
 TEST_F(MatchingTest, Market_BidPartialFill_TradeCorrectQty) {
