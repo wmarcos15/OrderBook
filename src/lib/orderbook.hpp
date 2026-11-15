@@ -9,12 +9,20 @@
 #include <map>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 struct BookConfig {
     Price tickSize {1};
     Price minPrice {1};
     Price maxPrice {100'000};
     SelfTradePolicy defaultSelfTradePolicy {SelfTradePolicy::cancelNewest};
+};
+
+// One price level as getDepth reports it
+struct LevelView {
+    Price price;
+    Quantity quantity;
+    std::size_t count;
 };
 
 class OrderBook {
@@ -128,6 +136,25 @@ class OrderBook {
                 return false;
             }
 
+        // Reads the level totals, so the cost does not depend on how many orders rest at each level
+        template<typename MapType>
+            std::vector<LevelView> depthOf(const MapType& side,
+                    const std::unordered_map<Price, LevelData>& sideData,
+                    std::size_t levels) const {
+
+                std::vector<LevelView> depth;
+                // min: levels can be far larger than the side, and reserve would try to allocate it all
+                depth.reserve(std::min(levels, side.size()));
+
+                for (const auto& [price, list] : side) {
+                    if (depth.size() == levels) break;
+
+                    const LevelData& level = sideData.at(price);
+                    depth.push_back({ price, level.qty_, level.count_ });
+                }
+                return depth;
+            }
+
     public:
         explicit OrderBook(BookConfig config = {});
 
@@ -138,6 +165,7 @@ class OrderBook {
         const Order* getOrder(OrderID id) const;
         Quantity getLevelQuantity(Side side, Price price) const;
         std::size_t getLevelCount(Side side, Price price) const;
+        std::vector<LevelView> getDepth(Side side, std::size_t levels) const; // best level first
         const BookConfig& getBookConfig() const;
         SelfTradePolicy getSelfTradePolicy(OwnerID ownerID) const;
 

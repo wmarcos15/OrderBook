@@ -60,6 +60,12 @@ std::size_t OrderBook::getLevelCount(Side side, Price price) const {
     return it != data.end() ? it->second.count_ : 0;
 }
 
+// O(levels returned)
+std::vector<LevelView> OrderBook::getDepth(Side side, std::size_t levels) const {
+    if (side == Side::buy) return depthOf(bids_, bidsData_, levels);
+    return depthOf(asks_, asksData_, levels);
+}
+
 const Order* OrderBook::getOrder(OrderID id) const {
     auto it = orders_.find(id);
     if (it == orders_.end()) return nullptr;

@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (225 tests) and a Google Benchmark suite that measures what
+GoogleTest suite (244 tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -59,10 +59,14 @@ alongside them and explains the difference.
   override it.
 - **O(1) depth queries** — `getLevelQuantity`, `getLevelCount` — from
   per-level aggregates maintained incrementally, never by walking a level.
-- **225 unit tests** across two suites: 87 on book state (resting, level data,
-  cancel, modify, argument validation, book configuration, owners) and 138 on
-  matching semantics (GTC partial/full fills and sweeps, time priority, trade
-  contents and owners, IOC, FOK, market orders, self-trade prevention).
+- **Depth snapshot.** `getDepth` returns the top N levels of a side in one
+  call, best level first, each with its price, total quantity and order
+  count.
+- **244 unit tests** across two suites: 106 on book state (resting, level
+  data, cancel, modify, argument validation, book configuration, owners,
+  depth snapshot) and 138 on matching semantics (GTC partial/full fills and
+  sweeps, time priority, trade contents and owners, IOC, FOK, market orders,
+  self-trade prevention).
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -90,6 +94,7 @@ printTrades(bid.trades);   // [✓] MATCH | BUY #2 vs SELL #1 @ €10001 | 50 un
 
 book.getLevelQuantity(Side::buy, 10'002);   // 30
 book.getBestBid()->getRemainingQuantity();  // 30
+book.getDepth(Side::buy, 5);                // { {10'002, 30, 1} }: price, quantity, order count
 
 // Reducing quantity at the same price keeps the order's queue position
 // and its ID. Any other change is a cancel + re-add and returns a new ID.
@@ -142,6 +147,14 @@ execute.
 
 Semantics worth knowing:
 
+- `getDepth(side, levels)` returns the levels **best first**: bids from the
+  highest price down, asks from the lowest price up, so element 0 is always
+  the level `getBestBid()` / `getBestAsk()` sits on. Only prices that hold
+  orders appear; an empty price between two levels is skipped, not reported
+  with quantity 0. `levels` is a maximum: a side with fewer levels returns
+  all it has, and an empty side or `levels == 0` returns an empty vector.
+  Quantities are what is still resting, added over all owners. The result is
+  a copy, so it does not change when the book does.
 - Owner IDs are chosen by the caller and passed as the first argument of
   `addOrder` / `addMarketOrder`; the book only stores them and copies them
   onto trades. A `modifyOrder` keeps the original owner, including when it
@@ -259,6 +272,7 @@ small no matter how deep the book gets.
 | `modifyOrder` (otherwise) | cancel + add | |
 | `canFullyFill` (FOK check) | O(orders in price range) | walks single orders, because what counts depends on who owns each one |
 | `getLevelQuantity` / `getLevelCount` | O(1) | hash lookup |
+| `getDepth` | O(levels returned) | walks the map from `begin()` and reads each level's aggregates; never walks the orders |
 | `getBestBid` / `getBestAsk` | O(1) | `begin()` |
 
 The first version of `cancelOrder` was O(log L): the list erase was O(1)
@@ -630,7 +644,7 @@ OrderBook/
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
-│   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config
+│   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config, depth
 │   └── matching_test.cpp       # GTC / IOC / FOK / market matching semantics, self-trade prevention
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark
