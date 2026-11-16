@@ -2,6 +2,7 @@ add_executable(orderbook_benchmark
     workload.cpp
     scenarios/addorder.cpp
     scenarios/cancelorder.cpp
+    scenarios/matchorder.cpp
     scenarios/modifyorder.cpp
 )
 

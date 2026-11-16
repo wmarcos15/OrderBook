@@ -16,6 +16,7 @@
 
 # Re-exclude after the allowlist
 benchmarks/.venv/
+__pycache__/
 .DS_Store
 
 # CI
