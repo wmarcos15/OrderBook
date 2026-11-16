@@ -577,10 +577,10 @@ counted, so the setup that builds the book is left out.
 
 | Operation | Allocating and freeing memory | `orders_` hash map | Level-totals hash map | Everything else |
 |---|---|---|---|---|
-| `addOrder` (the mixed workload) | 36% | 27% | 7% | 30% |
-| `cancelOrder` (hit) | 76% | 12% | — | 12% |
-| Sweep, 64 levels of one order | 56% | 5% | 9% | 30% |
-| Sweep, one level of 64 orders | 55% | 9% | 7% | 29% |
+| `addOrder` (the mixed workload) | 35% | 28% | 7% | 30% |
+| `cancelOrder` (hit) | 70% | 15% | — | 15% |
+| Sweep, 64 levels of one order | 54% | 5% | 8% | 33% |
+| Sweep, one level of 64 orders | 54% | 9% | 8% | 29% |
 
 The hash map columns are lookups, inserts and erases, not counting the
 memory for their nodes, which is in the first column. "Everything else" is
@@ -597,7 +597,7 @@ fifth is something that is on no list of optimisations: the `trades` vector
 inside `OrderResult`, allocated for every order that trades and regrown as
 it fills.
 
-**The `orders_` hash map is the second largest**, at 27% of `addOrder`
+**The `orders_` hash map is the second largest**, at 28% of `addOrder`
 before its node allocations are counted. The table holds every live order,
 so it is the one structure that does not stay in cache.
 
@@ -608,11 +608,25 @@ a level is 38 of the 101 ns each level costs. This is what the September
 discussion at the end of this section predicted: the change that sounds most
 significant is the one that matters least for the common path.
 
-Limits: one sample per millisecond gives a few thousand samples per
-operation (about 700 for `cancelOrder`), so the shares are good to a couple
-of points, not to the digit. And which allocation belongs to which structure
-was read from a second build with inlining disabled, which distorts timings
-and was used for nothing else.
+Limits: the table gives the middle of several runs, and the runs do not
+agree to the digit. The allocation share came out between 33% and 36% for
+`addOrder`, between 52% and 56% for the sweeps, and between 64% and 76% for
+`cancelOrder`, whose measured loop is short and collects the fewest samples.
+The ranking of the columns was the same in every run. And which allocation
+belongs to which structure was read from a second build with inlining
+disabled, which distorts timings and was used for nothing else.
+
+The profile can be repeated with the tools in
+[`benchmarks/profile/`](benchmarks/profile): `orderbook_profile` runs one
+operation in a loop, without the setup-heavy benchmark harness around it,
+and `breakdown.py` attaches `sample` to it and adds up the result. They need
+macOS.
+
+```bash
+cmake --build build --target orderbook_profile
+python3 benchmarks/profile/breakdown.py            # all four operations
+python3 benchmarks/profile/breakdown.py cancel --seconds 10
+```
 
 ### Results: the O(1) `cancelOrder` change (September)
 
@@ -832,13 +846,16 @@ OrderBook/
 │   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config, depth
 │   └── matching_test.cpp       # GTC / IOC / FOK / market matching semantics, self-trade prevention
 └── benchmarks/
-    ├── CMakeLists.txt          # orderbook_benchmark
+    ├── CMakeLists.txt          # orderbook_benchmark, orderbook_profile
     ├── workload.hpp / .cpp     # seeded synthetic order flow
     ├── scenarios/
     │   ├── addorder.cpp
     │   ├── cancelorder.cpp
     │   ├── matchorder.cpp      # the sweep behind the matching-cost curves
     │   └── modifyorder.cpp
+    ├── profile/
+    │   ├── driver.cpp          # orderbook_profile: one operation in a loop, for a profiler
+    │   └── breakdown.py        # samples it and prints where the time goes (macOS)
     ├── results_v2-map.json     # v2.0.0 baseline (Google Benchmark JSON)
     ├── results_v1-rerun.json   # v1.0.0 re-run next to the v2.0.0 baseline
     ├── results.json            # September, after the O(1) cancelOrder change
