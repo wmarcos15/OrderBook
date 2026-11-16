@@ -382,6 +382,14 @@ python3 plot.py results_v2-map.json                   # writes benchmark_plot.pn
 positional arguments; without any, it reads `results.json`. The curves are
 only drawn when the results contain the sweep benchmark.
 
+To compare two runs, `compare.py` draws them side by side with the change
+for each operation:
+
+```bash
+python3 compare.py results_v1-rerun.json results_v2-map.json comparison_v1_v2_plot.png \
+    --before-label "v1.0.0" --after-label "v2.0.0"
+```
+
 ### Using it from another CMake project
 
 Pull the repository in with `FetchContent` (or `add_subdirectory` on a local
@@ -538,9 +546,11 @@ rebuilt and run two minutes after the baseline:
 |---|---|---|---|
 | `addOrder` | 160.4 ns | 155.5 ns | −3.1% |
 | `cancelOrder` (hit) | 44.4 ns | 44.8 ns | +0.9% |
-| `cancelOrder` (miss) | 1.98 ns | 1.98 ns | 0.0% |
-| `modifyOrder` (friendly) | 9.07 ns | 11.3 ns | +24.8% |
+| `cancelOrder` (miss) | 1.98 ns | 1.98 ns | −0.1% |
+| `modifyOrder` (friendly) | 9.07 ns | 11.3 ns | +24.9% |
 | `modifyOrder` (unfriendly) | 83.7 ns | 83.8 ns | +0.1% |
+
+![v1.0.0 against v2.0.0](benchmarks/comparison_v1_v2_plot.png)
 
 So everything v2.0.0 added — owner IDs, the self-trade check on every match,
 price validation against the tick and the band, the policy-aware `FOK` check
@@ -833,10 +843,12 @@ OrderBook/
     ├── results_v1-rerun.json   # v1.0.0 re-run next to the v2.0.0 baseline
     ├── results.json            # September, after the O(1) cancelOrder change
     ├── results_4b4fa81.json    # September, before it
-    ├── plot.py                 # results file → the two charts below
+    ├── plot.py                 # one results file → benchmark_plot.png, matching_curves_plot.png
+    ├── compare.py              # two results files → a side-by-side chart
     ├── requirements.txt
     ├── benchmark_plot.png
-    └── matching_curves_plot.png
+    ├── matching_curves_plot.png
+    └── comparison_v1_v2_plot.png
 ```
 
 ---
