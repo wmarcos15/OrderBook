@@ -9,15 +9,18 @@ measurements to decide what to change.
 
 | Operation | Median latency |
 |---|---|
-| `addOrder` (crossing two-sided flow, includes matching) | **215.9 ns** |
-| `cancelOrder` — order exists | **63.4 ns** |
-| `cancelOrder` — order does not exist | **2.8 ns** |
-| `modifyOrder` — quantity reduced in place | **12.2 ns** |
-| `modifyOrder` — price changed (cancel + re-add) | **117.2 ns** |
+| `addOrder` (crossing two-sided flow, includes matching) | **155.5 ns** |
+| `cancelOrder` — order exists | **44.8 ns** |
+| `cancelOrder` — order does not exist | **2.0 ns** |
+| `modifyOrder` — quantity reduced in place | **11.3 ns** |
+| `modifyOrder` — price changed (cancel + re-add) | **83.8 ns** |
+| Crossing order — each extra price level swept | **+101 ns** |
+| Crossing order — each extra resting order filled | **+63 ns** |
 
-Single-threaded, Apple M2 Max, Release build. These are the numbers after
-making `cancelOrder` O(1); the [Results](#results) section keeps the baseline
-alongside them and explains the difference.
+Single-threaded, Apple M2 Max, Release build, v2.0.0. This is the
+`std::map`-based engine, and these numbers are the baseline a planned engine
+rewrite will be measured against. [Benchmarks](#benchmarks) has the method,
+the matching-cost curves and a breakdown of where the time goes.
 
 ![Benchmark results](benchmarks/benchmark_plot.png)
 
@@ -364,19 +367,20 @@ ctest --test-dir build --output-on-failure
 Benchmarks only mean something in a **Release** build. A debug build disables
 inlining and optimisation and produces numbers unrelated to real behaviour.
 
-To regenerate the chart from a fresh run:
+To regenerate the charts from a fresh run:
 
 ```bash
-./build/benchmarks/orderbook_benchmark --benchmark_format=json > benchmarks/results.json
+./build/benchmarks/orderbook_benchmark --benchmark_format=json > benchmarks/results_v2-map.json
 
 cd benchmarks
 python3 -m venv .venv && source .venv/bin/activate   # first time only
 pip install -r requirements.txt
-python3 plot.py                                       # reads results.json, writes benchmark_plot.png
+python3 plot.py results_v2-map.json                   # writes benchmark_plot.png and matching_curves_plot.png
 ```
 
-`plot.py` accepts the input and output paths as optional positional
-arguments.
+`plot.py` takes the results file and the two output paths as optional
+positional arguments; without any, it reads `results.json`. The curves are
+only drawn when the results contain the sweep benchmark.
 
 ### Using it from another CMake project
 
@@ -421,6 +425,7 @@ chooses the iteration count itself unless the scenario pins it.
 | `BM_CancelOrderMiss` | Empty book | Cancels IDs that were never issued — a single failed hash lookup. |
 | `BM_ModifyOrder_Friendly` | 2 M GTC buys, all at one price, qty 100 | Reduces each order to qty 50 at the same price. 100 k iterations pinned. |
 | `BM_ModifyOrder_Unfriendly` | Same | Moves each order one tick down at the same qty — internally cancel + add. 100 k iterations pinned. |
+| `BM_MatchOrder_Sweep` | 128 k resting asks in a ladder of consecutive prices, the same number at every level | One buy that sweeps exactly the next *n* levels and fills every order in them. 13 points: 1 to 64 levels holding one order each, and 1 to 64 orders at a single level. Iterations pinned so that each repetition uses up the ladder exactly. |
 
 The cancel and modify scenarios deliberately use a **single-sided book**. If
 orders could match during setup, some targets would already be filled and the
@@ -433,25 +438,57 @@ once. What is measured is the cost of moving an order within the book. A
 reprice that crosses the spread costs more, and how much more depends on the
 book state at that moment — a property of the market, not of the engine.
 
-### Why there is no isolated "matching cost" number
+### Matching cost
 
-The naive version of that benchmark is not worth reporting. Liquidity is
+There is no single "matching cost" number, because it depends on what the
+order crosses: sweeping one level with one resting order and sweeping eight
+levels with fifty orders each are both realistic, and differ by an order of
+magnitude. The meaningful measurement is a curve — cost as a function of how
+much is swept — and `BM_MatchOrder_Sweep` measures two of them.
+
+The naive version of this benchmark is not worth reporting. Liquidity is
 consumed as it is matched, so a loop either exhausts the contra side and
 silently degrades into the non-matching case, or replenishes it inside the
 timed region and pays timer-pause overhead comparable to the operation
-itself. And the result would depend on setup choices with no correct answer:
-sweeping one level with one resting order and sweeping eight levels with fifty
-orders each are both realistic, and differ by an order of magnitude.
+itself. This one never refills. The setup builds a single ladder of asks at
+consecutive prices, each iteration sends one buy that sweeps exactly the next
+*n* levels and fills every order in them, and the iteration count is pinned
+so that the ladder is used up exactly when the repetition ends. The timed
+region is one `addOrder` call and nothing else, and the benchmark reports an
+error if the book is not empty afterwards.
 
-The meaningful measurement is a curve — cost as a function of levels swept —
-which is a property of the engine rather than of an invented book. Google
-Benchmark supports that directly via `->Arg(n)`; it is the natural next
-addition to the suite.
+![Matching-cost curves](benchmarks/matching_curves_plot.png)
+
+| Levels swept, one order each | Median | Orders filled, one level | Median |
+|---|---|---|---|
+| 1 | 141.9 ns | 1 | 141.9 ns |
+| 2 | 261.6 ns | 2 | 224.6 ns |
+| 4 | 492.7 ns | 4 | 368.3 ns |
+| 8 | 924.1 ns | 8 | 651.5 ns |
+| 16 | 1 738.7 ns | 16 | 1 160.4 ns |
+| 32 | 3 361.2 ns | 32 | 2 156.2 ns |
+| 64 | 6 518.5 ns | 64 | 4 108.9 ns |
+
+Both are straight lines: about **101 ns for each extra level** and **63 ns
+for each extra order**. Sweeping a level that holds one order means filling
+that order and then removing the level, so the difference between the two
+slopes, roughly 38 ns, is the price of removing a level: one node erased from
+the `std::map` and one from the level-totals hash map. The 63 ns per order
+covers unlinking the list node, erasing the `orders_` entry, freeing the
+order and appending a trade.
+
+Two limits of the method. A ladder of 128 000 price levels is not a
+realistic book; it is that long only so that it never runs out. And every
+order is allocated one after another into a fresh heap, so neighbours in the
+book are neighbours in memory, which a long-lived book would not enjoy. Both
+flatter the absolute numbers. Neither affects a comparison between two
+engines run through the same benchmark, which is what the curves are for.
 
 ### Environment
 
-Both runs below were made on the same machine, the same day, with the same
-build configuration.
+All runs were made on the same machine with the same build configuration.
+The two September runs were made the same day, and the two November runs two
+minutes apart.
 
 | Field | Value |
 |---|---|
@@ -465,7 +502,9 @@ build configuration.
 | Workload seed | 42 |
 | Repetitions | 10 |
 | Baseline run | 2026-09-06 18:10, load avg 1.68, code at `4b4fa81` — [`results_4b4fa81.json`](benchmarks/results_4b4fa81.json) |
-| O(1)-cancel run | 2026-09-06 19:43, load avg 1.72, current code — [`results.json`](benchmarks/results.json) |
+| O(1)-cancel run | 2026-09-06 19:43, load avg 1.72, code at `v1.0.0` — [`results.json`](benchmarks/results.json) |
+| v2.0.0 baseline run | 2026-11-16 01:25, load avg 3.73, code at `v2.0.0` plus the sweep scenario — [`results_v2-map.json`](benchmarks/results_v2-map.json) |
+| v1.0.0 re-run | 2026-11-16 01:27, load avg 3.20, code at `v1.0.0` — [`results_v1-rerun.json`](benchmarks/results_v1-rerun.json) |
 
 Google Benchmark prints two warnings on this platform, neither of which
 affects the timings. It cannot read `hw.cpufrequency` on Apple Silicon (cores
@@ -474,7 +513,102 @@ frequency is meaningless metadata. And it cannot set thread affinity on macOS,
 so the process is not pinned to a core; the CV column below quantifies how
 much stability that cost.
 
-### Results
+### Results: v2.0.0 baseline
+
+| Operation | Median | Mean | Std dev | CV |
+|---|---|---|---|---|
+| `addOrder` | 155.5 ns | 155.4 ns | 1.85 ns | 1.19% |
+| `cancelOrder` (hit) | 44.8 ns | 44.6 ns | 0.79 ns | 1.78% |
+| `cancelOrder` (miss) | 1.98 ns | 1.98 ns | 0.002 ns | 0.11% |
+| `modifyOrder` (friendly) | 11.3 ns | 11.4 ns | 0.33 ns | 2.87% |
+| `modifyOrder` (unfriendly) | 83.8 ns | 83.9 ns | 0.25 ns | 0.30% |
+
+A second full run made immediately afterwards agreed within 1% on every
+scenario except the friendly modify, which moved by 0.4 ns.
+
+**These figures are about 28% lower than the September ones further down,
+and that is not the code.** The clearest evidence is the `cancelOrder` miss:
+a single failed hash lookup, unchanged since the first version, went from
+2.79 ns to 1.98 ns. Something about the machine changed in the two months
+between the runs — operating system, toolchain or power state; the runs do
+not say which. To separate the machine from the code, the v1.0.0 code was
+rebuilt and run two minutes after the baseline:
+
+| Operation | v1.0.0, re-run | v2.0.0 | Difference |
+|---|---|---|---|
+| `addOrder` | 160.4 ns | 155.5 ns | −3.1% |
+| `cancelOrder` (hit) | 44.4 ns | 44.8 ns | +0.9% |
+| `cancelOrder` (miss) | 1.98 ns | 1.98 ns | 0.0% |
+| `modifyOrder` (friendly) | 9.07 ns | 11.3 ns | +24.8% |
+| `modifyOrder` (unfriendly) | 83.7 ns | 83.8 ns | +0.1% |
+
+So everything v2.0.0 added — owner IDs, the self-trade check on every match,
+price validation against the tick and the band, the policy-aware `FOK` check
+— costs nothing measurable on `addOrder`, `cancelOrder` or a repricing
+modify. The `addOrder` difference is small enough to be drift, and the two
+versions do not do identical work there: about 1% of v2.0.0's matches are
+self-trades and are prevented. The one real cost is on the friendly modify,
+2.2 ns on an operation that took 9. The likely cause is `validatePrice`,
+which now runs on that path and contains an integer remainder
+(`price % tickSize`).
+
+The broader point is the one this project keeps making: the same code
+measured 216 ns in September and 160 ns in November. Absolute numbers from
+different days are not comparable, and every comparison from here on is made
+back to back.
+
+### Where the time goes
+
+The benchmarks say how long each operation takes; a profile says what it
+spends that time on. Each operation was run in a loop for five seconds
+against the same Release library while macOS's `sample` recorded its call
+stack every millisecond. Only the samples inside the operation itself are
+counted, so the setup that builds the book is left out.
+
+| Operation | Allocating and freeing memory | `orders_` hash map | Level-totals hash map | Everything else |
+|---|---|---|---|---|
+| `addOrder` (the mixed workload) | 36% | 27% | 7% | 30% |
+| `cancelOrder` (hit) | 76% | 12% | — | 12% |
+| Sweep, 64 levels of one order | 56% | 5% | 9% | 30% |
+| Sweep, one level of 64 orders | 55% | 9% | 7% | 29% |
+
+The hash map columns are lookups, inserts and erases, not counting the
+memory for their nodes, which is in the first column. "Everything else" is
+the `std::map` of price levels, the level lists, `shared_ptr` reference
+counting and the book's own logic; the compiler inlines those into each
+other, so a sampling profiler cannot separate them. The part of `std::map`
+that does stay visible is 2% of `addOrder` and 7% of the 64-level sweep.
+
+**Allocation is the largest cost of every operation.** A `cancelOrder` is
+three frees and little else: the `Order`, its list node and its `orders_`
+node, in roughly equal parts. In `addOrder` about a third of the allocation
+time is the `Order` itself, about a fifth is the `orders_` node, and about a
+fifth is something that is on no list of optimisations: the `trades` vector
+inside `OrderResult`, allocated for every order that trades and regrown as
+it fills.
+
+**The `orders_` hash map is the second largest**, at 27% of `addOrder`
+before its node allocations are counted. The table holds every live order,
+so it is the one structure that does not stay in cache.
+
+**The price map is small.** The structure a price ladder would replace —
+the `std::map` and the level-totals hash map together — is around a tenth of
+`addOrder`. It matters more when an order sweeps many levels, where removing
+a level is 38 of the 101 ns each level costs. This is what the September
+discussion at the end of this section predicted: the change that sounds most
+significant is the one that matters least for the common path.
+
+Limits: one sample per millisecond gives a few thousand samples per
+operation (about 700 for `cancelOrder`), so the shares are good to a couple
+of points, not to the digit. And which allocation belongs to which structure
+was read from a second build with inlining disabled, which distorts timings
+and was used for nothing else.
+
+### Results: the O(1) `cancelOrder` change (September)
+
+This is the earlier experiment, kept as it was written. Its absolute figures
+are higher than the ones above for the reason just given; the comparison
+inside it holds, because its two runs were made together.
 
 **Baseline** — `cancelOrder` reaches its level through `bids_[price]` and
 `bidsData_[price]`:
@@ -511,7 +645,7 @@ runs), and `cancelOrder` 92.2 ns (old) against 64.4 and 64.2 ns (new). So:
 roughly 3% of the `addOrder` difference is real and the rest is drift, and
 the `cancelOrder` improvement is fully reproducible.
 
-### Reading the results
+### Reading the September results
 
 **A miss is the floor.** 2.8 ns for a cancel that finds nothing is a single
 failed `unordered_map` lookup — a useful reference for what "essentially free"
@@ -693,21 +827,22 @@ OrderBook/
     ├── scenarios/
     │   ├── addorder.cpp
     │   ├── cancelorder.cpp
+    │   ├── matchorder.cpp      # the sweep behind the matching-cost curves
     │   └── modifyorder.cpp
-    ├── results.json            # current results (Google Benchmark JSON)
-    ├── results_4b4fa81.json    # baseline before the O(1) cancelOrder change
-    ├── plot.py                 # results.json → benchmark_plot.png
+    ├── results_v2-map.json     # v2.0.0 baseline (Google Benchmark JSON)
+    ├── results_v1-rerun.json   # v1.0.0 re-run next to the v2.0.0 baseline
+    ├── results.json            # September, after the O(1) cancelOrder change
+    ├── results_4b4fa81.json    # September, before it
+    ├── plot.py                 # results file → the two charts below
     ├── requirements.txt
-    └── benchmark_plot.png
+    ├── benchmark_plot.png
+    └── matching_curves_plot.png
 ```
 
 ---
 
 ## Future work
 
-- **Matching-cost curve.** Benchmark a crossing order as a function of levels
-  swept (`->Arg(n)`), which is the measurement the current suite deliberately
-  does not fake.
 - **One structure per level.** Fold `LevelData` into the map's value type so
   a level is a single node, `OrderEntry` drops back to one pointer, and the
   two parallel `unordered_map`s go away. Expected to recover the few percent
