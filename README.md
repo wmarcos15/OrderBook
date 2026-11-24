@@ -415,12 +415,12 @@ inlining and optimisation and produces numbers unrelated to real behaviour.
 To regenerate the charts from a fresh run:
 
 ```bash
-./build/benchmarks/orderbook_benchmark --benchmark_format=json > benchmarks/results_v2-map.json
+./build/benchmarks/orderbook_benchmark --benchmark_format=json > benchmarks/results_v2-pool.json
 
 cd benchmarks
 python3 -m venv .venv && source .venv/bin/activate   # first time only
 pip install -r requirements.txt
-python3 plot.py results_v2-map.json                   # writes benchmark_plot.png and matching_curves_plot.png
+python3 plot.py results_v2-pool.json                  # writes benchmark_plot.png and matching_curves_plot.png
 ```
 
 `plot.py` takes the results file and the two output paths as optional
@@ -514,25 +514,28 @@ error if the book is not empty afterwards.
 
 | Levels swept, one order each | Median | Orders filled, one level | Median |
 |---|---|---|---|
-| 1 | 141.9 ns | 1 | 141.9 ns |
-| 2 | 261.6 ns | 2 | 224.6 ns |
-| 4 | 492.7 ns | 4 | 368.3 ns |
-| 8 | 924.1 ns | 8 | 651.5 ns |
-| 16 | 1 738.7 ns | 16 | 1 160.4 ns |
-| 32 | 3 361.2 ns | 32 | 2 156.2 ns |
-| 64 | 6 518.5 ns | 64 | 4 108.9 ns |
+| 1 | 92.4 ns | 1 | 92.4 ns |
+| 2 | 175.0 ns | 2 | 144.2 ns |
+| 4 | 335.8 ns | 4 | 227.0 ns |
+| 8 | 634.1 ns | 8 | 405.5 ns |
+| 16 | 1 216.5 ns | 16 | 690.1 ns |
+| 32 | 2 356.7 ns | 32 | 1 274.7 ns |
+| 64 | 4 608.1 ns | 64 | 2 352.2 ns |
 
-Both are straight lines: about **101 ns for each extra level** and **63 ns
-for each extra order**. Sweeping a level that holds one order means filling
-that order and then removing the level, so the difference between the two
-slopes, roughly 38 ns, is the price of removing a level: one node erased from
-the `std::map` and one from the level-totals hash map. The 63 ns per order
-covers unlinking the list node, erasing the `orders_` entry, freeing the
-order and appending a trade.
+These are the current engine's curves, with the order pool. Both are straight
+lines: about **72 ns for each extra level** and **36 ns for each extra
+order**. Sweeping a level that holds one order means filling that order and
+then removing the level, so the difference between the two slopes, roughly
+36 ns, is the price of removing a level: one node erased from the `std::map`
+and one from the level-totals hash map. The 36 ns per order covers unlinking
+the node, erasing the `orders_` entry, returning the slot to the pool and
+appending a trade. On the v2.0.0 engine, run the same day, the slopes were
+97 and 61 ns: the pool made each order cheaper and left the price of removing
+a level where it was.
 
 Two limits of the method. A ladder of 128 000 price levels is not a
 realistic book; it is that long only so that it never runs out. And every
-order is allocated one after another into a fresh heap, so neighbours in the
+order is allocated one after another from a fresh pool, so neighbours in the
 book are neighbours in memory, which a long-lived book would not enjoy. Both
 flatter the absolute numbers. Neither affects a comparison between two
 engines run through the same benchmark, which is what the curves are for.
@@ -721,11 +724,14 @@ These are shares of a shorter operation, so a share can stay put while the
 time it stands for shrinks: the allocation in `addOrder` is about 46 ns
 before and about 28 ns after, and in `cancelOrder` about 30 ns before and
 about 10 ns after. The allocation that left is the one this change targeted.
-Inside the book's own logic (the `Order` and the list node), allocation fell
-from 23% to 13% of `addOrder` and from 26% to 3% of `cancelOrder`. What is
-left of it is almost all the `orders_` hash map: its work and its node
-allocations are now 40% of `addOrder` and 68% of `cancelOrder`, the largest
-single cost in both. That is the next step.
+In the old `cancelOrder` the list node was freed in the book's own logic (26%
+of the operation, now 3%), while the `Order` was freed inside the `orders_`
+erase, which dropped the last reference to it. So the `orders_` column before
+the change includes freeing the `Order`. In `addOrder`, allocation in the
+book's own logic fell from 23% to 13%, and the `trades` vector is part of
+what remains. The `orders_` hash map is now the largest single structure in
+both: 40% of `addOrder` and 68% of `cancelOrder`, its node allocations
+included. That is the next step.
 
 Two limits. The profile shares are good to a few points, and one run of
 `cancelOrder`, whose loop is short, can move by more. And the new book's
@@ -987,8 +993,8 @@ OrderBook/
 
 ## Future work
 
-- **Lookup by order ID.** The `orders_` hash map is now the largest cost of
-  `addOrder` and `cancelOrder`. IDs are sequential, so a plain array indexed
+- **Lookup by order ID.** The `orders_` hash map is now the largest single
+  structure in `addOrder` and `cancelOrder`. IDs are sequential, so a plain array indexed
   by ID could replace it, with the open question of what to do with the slots
   of orders long gone.
 - **One structure per level.** Fold the price map and `LevelData` into one
