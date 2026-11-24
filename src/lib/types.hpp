@@ -1,7 +1,5 @@
 #pragma once
 #include <cstdint>
-#include <list>
-#include <memory>
 
 namespace orderbook {
 
@@ -32,9 +30,5 @@ enum class OrderStatus {
     selfTradeCancelledNewest,
     selfTradeCancelledOldest
 };
-
-class Order; // forward declaration
-using OrderPointer = std::shared_ptr<Order>;
-using OrderPointers = std::list<OrderPointer>;
 
 } // namespace orderbook

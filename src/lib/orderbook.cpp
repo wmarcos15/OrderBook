@@ -39,12 +39,12 @@ std::size_t OrderBook::size() const {
 
 const Order* OrderBook::getBestBid() const {
     if (bids_.empty()) return nullptr;
-    return bids_.begin()->second.front().get();
+    return &bids_.begin()->second.head->order;
 }
 
 const Order* OrderBook::getBestAsk() const {
     if (asks_.empty()) return nullptr;
-    return asks_.begin()->second.front().get();
+    return &asks_.begin()->second.head->order;
 }
 
 bool OrderBook::empty() const {
@@ -71,7 +71,7 @@ std::vector<LevelView> OrderBook::getDepth(Side side, std::size_t levels) const 
 const Order* OrderBook::getOrder(OrderID id) const {
     auto it = orders_.find(id);
     if (it == orders_.end()) return nullptr;
-    return it->second.order_.get();
+    return &it->second->order;
 }
 
 const BookConfig& OrderBook::getBookConfig() const {
@@ -97,13 +97,13 @@ void OrderBook::validatePrice(Price price) const {
         throw std::invalid_argument("price not on tick");
 }
 
-bool OrderBook::match(OrderPointer incoming, OrderResult& result) {
-    while (incoming->getRemainingQuantity() > 0) {
-        if (incoming->getSide() == Side::buy) {
-            if (asks_.empty() || incoming->getPrice() < asks_.begin()->first) break;
+bool OrderBook::match(Order& incoming, OrderResult& result) {
+    while (incoming.getRemainingQuantity() > 0) {
+        if (incoming.getSide() == Side::buy) {
+            if (asks_.empty() || incoming.getPrice() < asks_.begin()->first) break;
             if (!matchTop(incoming, asks_, asksData_, result)) return false;
         } else {
-            if (bids_.empty() || incoming->getPrice() > bids_.begin()->first) break;
+            if (bids_.empty() || incoming.getPrice() > bids_.begin()->first) break;
             if (!matchTop(incoming, bids_, bidsData_, result)) return false;
         }
     }
@@ -112,8 +112,8 @@ bool OrderBook::match(OrderPointer incoming, OrderResult& result) {
 }
 
 // O(n) so that updates can be O(1)
-bool OrderBook::canFullyFill(OrderPointer order, OrderResult& result) const {
-    if (order->getSide() == Side::buy) return canFullyFillAgainst(order, asks_, result);
+bool OrderBook::canFullyFill(const Order& order, OrderResult& result) const {
+    if (order.getSide() == Side::buy) return canFullyFillAgainst(order, asks_, result);
     return canFullyFillAgainst(order, bids_, result);
 }
 
@@ -123,7 +123,7 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
         throw std::invalid_argument("quantity must be greater than zero");
 
     OrderID id = nextID_++;
-    OrderPointer incoming = std::make_shared<Order>(id, owner, type, side, price, qty);
+    Order incoming(id, owner, type, side, price, qty);
 
     OrderResult result {id, {}};
 
@@ -133,16 +133,21 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
     if (!match(incoming, result))
         return result;
 
-    if (type == OrderType::IOC && !incoming->isFilled())
+    if (type == OrderType::IOC && !incoming.isFilled())
         return result;
 
-    if (!incoming->isFilled()) {
-        auto& list  = (side == Side::buy) ? bids_[price]     : asks_[price];
+    if (!incoming.isFilled()) {
+        // The slot is taken only now: an order that never rests allocates nothing
+        detail::OrderNode* node = pool_.allocate(incoming);
+        auto& queue = (side == Side::buy) ? bids_[price] : asks_[price];
         auto& level = (side == Side::buy) ? bidsData_[price] : asksData_[price];
-        list.push_back(incoming);
+
+        node->level = &queue;
+        node->levelData = &level;
+        queue.pushBack(node);
         level.count_++;
-        level.qty_ += incoming->getRemainingQuantity();
-        orders_[id] = OrderEntry{ incoming, std::prev(list.end()), &list, &level };
+        level.qty_ += incoming.getRemainingQuantity();
+        orders_[id] = node;
     }
 
     return result;
@@ -168,18 +173,21 @@ void OrderBook::cancelOrder(OrderID orderID) {
     auto it = findOrder(orderID);
     if (it == orders_.end()) return;
 
-    const auto& [order, location, list, level] = it->second;
-    Side side = order->getSide();
-    Price price = order->getPrice();
-    Quantity remainingQty = order->getRemainingQuantity();
+    detail::OrderNode* node = it->second;
+    Side side = node->order.getSide();
+    Price price = node->order.getPrice();
+    Quantity remainingQty = node->order.getRemainingQuantity();
+    detail::OrderQueue* queue = node->level;
+    detail::LevelData* level = node->levelData;
 
-    // No lookup by price: the entry already points at its level.
-    list->erase(location);
+    // No lookup by price: the node already points at its level.
+    queue->unlink(node);
     level->count_--;
     level->qty_ -= remainingQty;
 
     // Only an emptied level is looked up by price, and that is rare.
-    if (list->empty()) {
+    // Erasing it destroys the queue and the totals, so `queue` and `level` are dead after this.
+    if (queue->empty()) {
         if (side == Side::buy) {
             bids_.erase(price);
             bidsData_.erase(price);
@@ -190,18 +198,19 @@ void OrderBook::cancelOrder(OrderID orderID) {
     }
 
     orders_.erase(orderID);
+    pool_.release(node);   // last: nothing reads the node after this
 }
 
 std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPrice, Quantity newQty) {
     auto it = findOrder(orderID);
     if (it == orders_.end()) return std::nullopt;
 
-    OrderPointer order = it->second.order_;
-    OwnerID owner = order->getOwnerID();
-    OrderType type = order->getType();
-    Side side = order->getSide();
-    Price oldPrice = order->getPrice();
-    Quantity oldQty = order->getRemainingQuantity();
+    detail::OrderNode* node = it->second;
+    OwnerID owner = node->order.getOwnerID();
+    OrderType type = node->order.getType();
+    Side side = node->order.getSide();
+    Price oldPrice = node->order.getPrice();
+    Quantity oldQty = node->order.getRemainingQuantity();
 
     validatePrice(newPrice);
     if (newQty == 0) 
@@ -213,8 +222,8 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
 
     // Friendly
     if (newPrice == oldPrice && newQty < oldQty) {
-        order->fill(oldQty - newQty);
-        it->second.levelData_->qty_ -= (oldQty - newQty);
+        node->order.fill(oldQty - newQty);
+        node->levelData->qty_ -= (oldQty - newQty);
         return OrderResult({orderID, {}});
     } else { // Unfriendly
         cancelOrder(orderID);

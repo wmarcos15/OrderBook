@@ -2,6 +2,8 @@
 #include "types.hpp"
 #include "trade.hpp"
 #include "order.hpp" // so that I can later just import oderbook.hpp into main (less overhead)
+#include "pool.hpp"
+#include "order_queue.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -28,163 +30,151 @@ struct LevelView {
 };
 
 class OrderBook {
-    private:
-        struct LevelData {
-            Quantity qty_ {0};
-            Quantity count_ {0};
-        };
+private:
+    using LevelData = detail::LevelData;
 
-        // level_ and levelData_ point into bids_/asks_ and bidsData_/asksData_.
-        // Both std::map and std::unordered_map keep element addresses stable
-        // until that element is erased, and a level is only erased once its
-        // last order leaves, so the pointers stay valid for as long as the
-        // entry exists. They let cancelOrder skip the tree descent and the
-        // hash lookup it would otherwise need to find the level by price.
-        struct OrderEntry {
-            OrderPointer order_ {nullptr};
-            OrderPointers::iterator location_;
-            OrderPointers* level_ {nullptr};
-            LevelData* levelData_ {nullptr};
-        };
+    BookConfig config_;
 
-        BookConfig config_;
+    OrderID nextID_ {1};
 
-        OrderID nextID_ {1};
+    // Declared before the containers that point into it, so it is destroyed last
+    detail::Pool<detail::OrderNode> pool_;
 
-        std::map<Price, OrderPointers, std::greater<Price>> bids_;
-        std::map<Price, OrderPointers, std::less<Price>> asks_;
-        std::unordered_map<OrderID, OrderEntry> orders_;
+    std::map<Price, detail::OrderQueue, std::greater<Price>> bids_;
+    std::map<Price, detail::OrderQueue, std::less<Price>> asks_;
+    std::unordered_map<OrderID, detail::OrderNode*> orders_;
 
-        std::unordered_map<Price, LevelData> bidsData_;
-        std::unordered_map<Price, LevelData> asksData_;
+    std::unordered_map<Price, LevelData> bidsData_;
+    std::unordered_map<Price, LevelData> asksData_;
 
-        void validatePrice(Price price) const;
+    void validatePrice(Price price) const;
 
-        bool match(OrderPointer incoming, OrderResult& result);
-        bool canFullyFill(OrderPointer order, OrderResult& result) const;
+    bool match(Order& incoming, OrderResult& result);
+    bool canFullyFill(const Order& order, OrderResult& result) const;
 
-        using OrderIterator = std::unordered_map<OrderID, OrderEntry>::iterator;
-        OrderIterator findOrder(OrderID id);
+    using OrderIterator = std::unordered_map<OrderID, detail::OrderNode*>::iterator;
+    OrderIterator findOrder(OrderID id);
 
-        std::unordered_map<OwnerID, SelfTradePolicy> policies_;
+    std::unordered_map<OwnerID, SelfTradePolicy> policies_;
 
-        template<typename MapType>
-            bool matchTop(OrderPointer incoming, MapType& opposite, 
-                    std::unordered_map<Price, LevelData>& oppositeData, 
-                    OrderResult& result) {
+    template<typename MapType>
+    bool matchTop(Order& incoming, MapType& opposite, 
+                  std::unordered_map<Price, LevelData>& oppositeData, 
+                  OrderResult& result) {
 
-                auto& [bestPrice, oppositeList] = *opposite.begin();
-                OrderPointer resting = oppositeList.front();
+        auto& [bestPrice, oppositeList] = *opposite.begin();
+        detail::OrderNode* resting = oppositeList.head;
 
-                if (resting->getOwnerID() == incoming->getOwnerID()) {
-                    if (getSelfTradePolicy(incoming->getOwnerID()) == SelfTradePolicy::cancelNewest) {
-                        result.status = OrderStatus::selfTradeCancelledNewest;
-                        return false;
-                    }
-
-                    OrderID restingID = resting->getID();
-                    cancelOrder(restingID);
-                    result.status = OrderStatus::selfTradeCancelledOldest;
-                    result.cancelledOrders.push_back(restingID);
-                    return true;
-                }
-
-                Quantity qty = std::min(incoming->getRemainingQuantity(), resting->getRemainingQuantity());
-                incoming->fill(qty);
-                resting->fill(qty);
-
-                oppositeData[bestPrice].qty_ -= qty;
-
-                bool incomingIsBuy = incoming->getSide() == Side::buy;
-                OrderID bidID = incomingIsBuy ? incoming->getID() : resting->getID();
-                OrderID askID = incomingIsBuy ? resting->getID() : incoming->getID();
-                OwnerID bidOwner = incomingIsBuy ? incoming->getOwnerID() : resting->getOwnerID();
-                OwnerID askOwner = incomingIsBuy ? resting->getOwnerID() : incoming->getOwnerID();
-                result.trades.push_back({ bidID, askID, bestPrice, qty, bidOwner, askOwner });
-
-                if (resting->isFilled()) {
-                    oppositeData[bestPrice].count_--;
-                    oppositeList.pop_front();
-                    orders_.erase(resting->getID());
-                }
-                if (oppositeList.empty()) {
-                    oppositeData.erase(bestPrice);
-                    opposite.erase(opposite.begin());
-                }
-                return true;
-            }
-
-        // Walks single orders, not level totals: what counts depends on who owns each one
-        template<typename MapType>
-            bool canFullyFillAgainst(OrderPointer order, const MapType& opposite, OrderResult& result) const {
-                Quantity qty = order->getRemainingQuantity();
-                OwnerID owner = order->getOwnerID();
-                bool isBuy = order->getSide() == Side::buy;
-                bool stopAtOwn = getSelfTradePolicy(owner) == SelfTradePolicy::cancelNewest;
-
-                for (const auto& [price, list] : opposite) {
-                    if (isBuy ? price > order->getPrice() : price < order->getPrice()) break;
-
-                    for (const auto& resting : list) {
-                        if (resting->getOwnerID() == owner) {
-                            if (!stopAtOwn) continue;
-                            result.status = OrderStatus::selfTradeCancelledNewest;
-                            return false;
-                        }
-                        if (resting->getRemainingQuantity() >= qty) return true;
-                        qty -= resting->getRemainingQuantity();
-                    }
-                }
+        if (resting->order.getOwnerID() == incoming.getOwnerID()) {
+            if (getSelfTradePolicy(incoming.getOwnerID()) == SelfTradePolicy::cancelNewest) {
+                result.status = OrderStatus::selfTradeCancelledNewest;
                 return false;
             }
 
-        // Reads the level totals, so the cost does not depend on how many orders rest at each level
-        template<typename MapType>
-            std::vector<LevelView> depthOf(const MapType& side,
-                    const std::unordered_map<Price, LevelData>& sideData,
-                    std::size_t levels) const {
+            OrderID restingID = resting->order.getID();
+            cancelOrder(restingID);
+            result.status = OrderStatus::selfTradeCancelledOldest;
+            result.cancelledOrders.push_back(restingID);
+            return true;
+        }
 
-                std::vector<LevelView> depth;
-                // min: levels can be far larger than the side, and reserve would try to allocate it all
-                depth.reserve(std::min(levels, side.size()));
+        Quantity qty = std::min(incoming.getRemainingQuantity(), resting->order.getRemainingQuantity());
+        incoming.fill(qty);
+        resting->order.fill(qty);
 
-                for (const auto& [price, list] : side) {
-                    if (depth.size() == levels) break;
+        oppositeData[bestPrice].qty_ -= qty;
 
-                    const LevelData& level = sideData.at(price);
-                    depth.push_back({ price, level.qty_, level.count_ });
+        bool incomingIsBuy = incoming.getSide() == Side::buy;
+        OrderID bidID = incomingIsBuy ? incoming.getID() : resting->order.getID();
+        OrderID askID = incomingIsBuy ? resting->order.getID() : incoming.getID();
+        OwnerID bidOwner = incomingIsBuy ? incoming.getOwnerID() : resting->order.getOwnerID();
+        OwnerID askOwner = incomingIsBuy ? resting->order.getOwnerID() : incoming.getOwnerID();
+        result.trades.push_back({ bidID, askID, bestPrice, qty, bidOwner, askOwner });
+
+        if (resting->order.isFilled()) {
+            OrderID restingID = resting->order.getID();   // read before the slot is released
+            oppositeData[bestPrice].count_--;
+            oppositeList.popFront();
+            orders_.erase(restingID);
+            pool_.release(resting);   // last: nothing reads `resting` after this
+        }
+        if (oppositeList.empty()) {
+            oppositeData.erase(bestPrice);
+            opposite.erase(opposite.begin());
+        }
+        return true;
+    }
+
+    // Walks single orders, not level totals: what counts depends on who owns each one
+    template<typename MapType>
+    bool canFullyFillAgainst(const Order& order, const MapType& opposite, OrderResult& result) const {
+        Quantity qty = order.getRemainingQuantity();
+        OwnerID owner = order.getOwnerID();
+        bool isBuy = order.getSide() == Side::buy;
+        bool stopAtOwn = getSelfTradePolicy(owner) == SelfTradePolicy::cancelNewest;
+
+        for (const auto& [price, list] : opposite) {
+            if (isBuy ? price > order.getPrice() : price < order.getPrice()) break;
+
+            for (const detail::OrderNode* node = list.head; node != nullptr; node = node->next) {
+                const Order& resting = node->order;
+                if (resting.getOwnerID() == owner) {
+                    if (!stopAtOwn) continue;
+                    result.status = OrderStatus::selfTradeCancelledNewest;
+                    return false;
                 }
-                return depth;
+                if (resting.getRemainingQuantity() >= qty) return true;
+                qty -= resting.getRemainingQuantity();
             }
+        }
+        return false;
+    }
 
-    public:
-        explicit OrderBook(BookConfig config = {});
+    // Reads the level totals, so the cost does not depend on how many orders rest at each level
+    template<typename MapType>
+    std::vector<LevelView> depthOf(const MapType& side,
+                                   const std::unordered_map<Price, LevelData>& sideData,
+                                   std::size_t levels) const {
 
-        // Not copyable: every OrderEntry points into this book's own levels, so
-        // the entries of a copy would still point into the original. Moving is
-        // fine, because the containers keep their elements' addresses when moved.
-        OrderBook(const OrderBook&) = delete;
-        OrderBook& operator=(const OrderBook&) = delete;
-        OrderBook(OrderBook&&) = default;
-        OrderBook& operator=(OrderBook&&) = default;
+        std::vector<LevelView> depth;
+        // min: levels can be far larger than the side, and reserve would try to allocate it all
+        depth.reserve(std::min(levels, side.size()));
 
-        std::size_t size() const; // total order count
-        const Order* getBestBid() const;
-        const Order* getBestAsk() const;
-        bool empty() const;
-        const Order* getOrder(OrderID id) const;
-        Quantity getLevelQuantity(Side side, Price price) const;
-        std::size_t getLevelCount(Side side, Price price) const;
-        std::vector<LevelView> getDepth(Side side, std::size_t levels) const; // best level first
-        const BookConfig& getBookConfig() const;
-        SelfTradePolicy getSelfTradePolicy(OwnerID ownerID) const;
+        for (const auto& [price, list] : side) {
+            if (depth.size() == levels) break;
 
-        void setSelfTradePolicy(OwnerID ownerID, SelfTradePolicy policy);
+            const LevelData& level = sideData.at(price);
+            depth.push_back({ price, level.qty_, level.count_ });
+        }
+        return depth;
+    }
 
-        OrderResult addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
-        OrderResult addMarketOrder(OwnerID owner, Side side, Quantity qty);
-        void cancelOrder(OrderID orderID);
-        std::optional<OrderResult> modifyOrder(OrderID orderID, Price newPrice, Quantity newQty);
+public:
+    explicit OrderBook(BookConfig config = {});
+
+    // Not copyable: every node points into this book's own levels and the pool cannot be copied. Moving is fine: the pool hands over its chunks and the containers keep their elements' addresses when moved.
+    OrderBook(const OrderBook&) = delete;
+    OrderBook& operator=(const OrderBook&) = delete;
+    OrderBook(OrderBook&&) = default;
+    OrderBook& operator=(OrderBook&&) = default;
+
+    std::size_t size() const; // total order count
+    const Order* getBestBid() const;
+    const Order* getBestAsk() const;
+    bool empty() const;
+    const Order* getOrder(OrderID id) const;
+    Quantity getLevelQuantity(Side side, Price price) const;
+    std::size_t getLevelCount(Side side, Price price) const;
+    std::vector<LevelView> getDepth(Side side, std::size_t levels) const; // best level first
+    const BookConfig& getBookConfig() const;
+    SelfTradePolicy getSelfTradePolicy(OwnerID ownerID) const;
+
+    void setSelfTradePolicy(OwnerID ownerID, SelfTradePolicy policy);
+
+    OrderResult addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
+    OrderResult addMarketOrder(OwnerID owner, Side side, Quantity qty);
+    void cancelOrder(OrderID orderID);
+    std::optional<OrderResult> modifyOrder(OrderID orderID, Price newPrice, Quantity newQty);
 
 };
 
