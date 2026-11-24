@@ -54,6 +54,7 @@ ORDERS = "orders_ (hash map by ID)"
 LEVEL_TOTALS = "level totals (hash map by price)"
 PRICE_LEVELS = "price levels (std::map)"
 LEVEL_QUEUE = "level queue (std::list)"
+SLOT_POOL = "slot pool (detail::Pool)"
 ORDER_OBJECT = "Order object (shared_ptr)"
 TRADE_LIST = "trade list (std::vector)"
 BOOK_LOGIC = "book logic"
@@ -118,7 +119,8 @@ def parse_call_graph(report_path):
 def structure_of(symbol):
     """Return the structure a function belongs to, or None if its name does not say."""
     if symbol.startswith(HASH_PREFIXES):
-        if "OrderEntry" in symbol:
+        # OrderEntry is the value type before the pool, OrderNode* after it
+        if "OrderEntry" in symbol or "OrderNode" in symbol:
             return ORDERS
         if "LevelData" in symbol:
             return LEVEL_TOTALS
@@ -132,6 +134,8 @@ def structure_of(symbol):
         return TRADE_LIST
     if symbol.startswith("orderbook::OrderResult"):
         return TRADE_LIST
+    if symbol.startswith("orderbook::detail::Pool"):
+        return SLOT_POOL
     if symbol.startswith("orderbook::"):
         return BOOK_LOGIC
     return None
