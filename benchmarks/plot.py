@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 LABELS = [
     ("BM_AddOrder", "addOrder"),
     ("BM_CancelOrderHit", "cancelOrder\n(hit)"),
+    ("BM_CancelOrderShuffled", "cancelOrder\n(shuffled)"),
     ("BM_CancelOrderMiss", "cancelOrder\n(miss)"),
     ("BM_ModifyOrder_Friendly", "modifyOrder\n(friendly)"),
     ("BM_ModifyOrder_Unfriendly", "modifyOrder\n(unfriendly)"),
