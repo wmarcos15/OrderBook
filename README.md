@@ -29,6 +29,8 @@ matching-cost curves and a breakdown of where the time goes.
 
 ![Benchmark results](benchmarks/benchmark_plot.png)
 
+![The v2.0.0 engine against the order pool](benchmarks/comparison_v2_pool_plot.png)
+
 ---
 
 ## Contents
