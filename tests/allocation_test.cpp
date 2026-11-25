@@ -20,19 +20,32 @@ static bool counting {false};
 static std::size_t allocations {0};
 static std::size_t failAt {0}; // counted from 1, 0 for never
 
-static void* allocate(std::size_t size) {
-    if (counting && ++allocations == failAt) throw std::bad_alloc();
-    void* memory = std::malloc(size == 0 ? 1 : size);
+static bool shouldFail() {
+    return counting && ++allocations == failAt;
+}
+
+static void* allocate(std::size_t size) noexcept {
+    if (shouldFail()) return nullptr;
+    return std::malloc(size == 0 ? 1 : size);
+}
+
+static void* allocateOrThrow(std::size_t size) {
+    void* memory = allocate(size);
     if (memory == nullptr) throw std::bad_alloc();
     return memory;
 }
 
-void* operator new(std::size_t size) { return allocate(size); }
-void* operator new[](std::size_t size) { return allocate(size); }
+// Every version, so that all the memory comes from malloc and goes back with free
+void* operator new(std::size_t size) { return allocateOrThrow(size); }
+void* operator new[](std::size_t size) { return allocateOrThrow(size); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept { return allocate(size); }
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept { return allocate(size); }
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete(void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
+void operator delete[](void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
 
 // Returns whether the allocation was reached, so whether it failed
 template<typename Action>
