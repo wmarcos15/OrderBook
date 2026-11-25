@@ -477,7 +477,7 @@ include(FetchContent)
 FetchContent_Declare(
     orderbook
     GIT_REPOSITORY https://github.com/wmarcos15/OrderBook.git
-    GIT_TAG v2.2.0
+    GIT_TAG v2.2.1
 )
 
 FetchContent_MakeAvailable(orderbook)
