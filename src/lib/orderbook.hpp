@@ -5,11 +5,10 @@
 #include "pool.hpp"
 #include "order_queue.hpp"
 #include "order_table.hpp"
+#include "ladder.hpp"
 
 #include <algorithm>
 #include <cstddef>
-#include <functional>
-#include <map>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -32,92 +31,65 @@ struct LevelView {
 
 class OrderBook {
 private:
-    using LevelData = detail::LevelData;
-
     BookConfig config_;
 
     OrderID nextID_ {1};
 
-    // Declared before the containers that point into it, so it is destroyed last
+    // Declared before the ladder and the table that point into it, so it is destroyed last
     detail::Pool<detail::OrderNode> pool_;
 
-    std::map<Price, detail::OrderQueue, std::greater<Price>> bids_;
-    std::map<Price, detail::OrderQueue, std::less<Price>> asks_;
+    detail::Ladder ladder_;
     detail::OrderTable<> orders_;
 
-    std::unordered_map<Price, LevelData> bidsData_;
-    std::unordered_map<Price, LevelData> asksData_;
+    static constexpr std::size_t DEPTH_RESERVE = 32;
 
-    void validatePrice(Price price) const;
+    // Runs before the ladder is built
+    static BookConfig validated(const BookConfig& config);
 
-    bool match(Order& incoming, OrderResult& result);
-    bool canFullyFill(const Order& order, OrderResult& result) const;
+    [[noreturn]] void rejectPrice(Price price) const;
+
+    template<Side opposite>
+    static bool isBeyond(std::size_t position, std::size_t limit) {
+        if constexpr (opposite == Side::sell) return position > limit;
+        else return position < limit;
+    }
+
+    std::size_t positionWithOrders(Side side, Price price) const;
+
+    OrderResult addAt(std::size_t position, OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
+
+    bool match(Order& incoming, std::size_t limit, OrderResult& result);
+    bool matchTop(Order& incoming, std::size_t best, OrderResult& result);
+    bool canFullyFill(const Order& order, std::size_t limit, OrderResult& result) const;
 
     // Takes a resting order out of the book. The node is dead after this.
     void removeNode(detail::OrderNode* node);
 
     std::unordered_map<OwnerID, SelfTradePolicy> policies_;
 
-    template<typename MapType>
-    bool matchTop(Order& incoming, MapType& opposite, 
-                  std::unordered_map<Price, LevelData>& oppositeData, 
-                  OrderResult& result) {
-
-        auto& [bestPrice, oppositeList] = *opposite.begin();
-        detail::OrderNode* resting = oppositeList.head;
-
-        if (resting->order.getOwnerID() == incoming.getOwnerID()) {
-            if (getSelfTradePolicy(incoming.getOwnerID()) == SelfTradePolicy::cancelNewest) {
-                result.status = OrderStatus::selfTradeCancelledNewest;
-                return false;
-            }
-
-            OrderID restingID = resting->order.getID();   // read before the slot is released
-            removeNode(resting);
-            result.status = OrderStatus::selfTradeCancelledOldest;
-            result.cancelledOrders.push_back(restingID);
-            return true;
+    template<Side opposite>
+    bool matchAgainst(Order& incoming, std::size_t limit, OrderResult& result) {
+        while (incoming.getRemainingQuantity() > 0) {
+            std::size_t best = ladder_.best<opposite>();
+            if (best == detail::Ladder::NONE || isBeyond<opposite>(best, limit)) break;
+            if (!matchTop(incoming, best, result)) return false;
         }
 
-        Quantity qty = std::min(incoming.getRemainingQuantity(), resting->order.getRemainingQuantity());
-        incoming.fill(qty);
-        resting->order.fill(qty);
-
-        oppositeData[bestPrice].qty_ -= qty;
-
-        bool incomingIsBuy = incoming.getSide() == Side::buy;
-        OrderID bidID = incomingIsBuy ? incoming.getID() : resting->order.getID();
-        OrderID askID = incomingIsBuy ? resting->order.getID() : incoming.getID();
-        OwnerID bidOwner = incomingIsBuy ? incoming.getOwnerID() : resting->order.getOwnerID();
-        OwnerID askOwner = incomingIsBuy ? resting->order.getOwnerID() : incoming.getOwnerID();
-        result.trades.push_back({ bidID, askID, bestPrice, qty, bidOwner, askOwner });
-
-        if (resting->order.isFilled()) {
-            OrderID restingID = resting->order.getID();   // read before the slot is released
-            oppositeData[bestPrice].count_--;
-            oppositeList.popFront();
-            orders_.erase(restingID);
-            pool_.release(resting);   // last: nothing reads `resting` after this
-        }
-        if (oppositeList.empty()) {
-            oppositeData.erase(bestPrice);
-            opposite.erase(opposite.begin());
-        }
         return true;
     }
 
     // Walks single orders, not level totals: what counts depends on who owns each one
-    template<typename MapType>
-    bool canFullyFillAgainst(const Order& order, const MapType& opposite, OrderResult& result) const {
+    template<Side opposite>
+    bool canFullyFillAgainst(const Order& order, std::size_t limit, OrderResult& result) const {
         Quantity qty = order.getRemainingQuantity();
         OwnerID owner = order.getOwnerID();
-        bool isBuy = order.getSide() == Side::buy;
         bool stopAtOwn = getSelfTradePolicy(owner) == SelfTradePolicy::cancelNewest;
 
-        for (const auto& [price, list] : opposite) {
-            if (isBuy ? price > order.getPrice() : price < order.getPrice()) break;
+        for (std::size_t position = ladder_.best<opposite>();
+             position != detail::Ladder::NONE && !isBeyond<opposite>(position, limit);
+             position = ladder_.after<opposite>(position)) {
 
-            for (const detail::OrderNode* node = list.head; node != nullptr; node = node->next) {
+            for (const detail::OrderNode* node = ladder_.level(position).queue.head; node != nullptr; node = node->next) {
                 const Order& resting = node->order;
                 if (resting.getOwnerID() == owner) {
                     if (!stopAtOwn) continue;
@@ -132,20 +104,18 @@ private:
     }
 
     // Reads the level totals, so the cost does not depend on how many orders rest at each level
-    template<typename MapType>
-    std::vector<LevelView> depthOf(const MapType& side,
-                                   const std::unordered_map<Price, LevelData>& sideData,
-                                   std::size_t levels) const {
-
+    template<Side side>
+    std::vector<LevelView> depthOf(std::size_t levels) const {
         std::vector<LevelView> depth;
         // min: levels can be far larger than the side, and reserve would try to allocate it all
-        depth.reserve(std::min(levels, side.size()));
+        depth.reserve(std::min(levels, DEPTH_RESERVE));
 
-        for (const auto& [price, list] : side) {
-            if (depth.size() == levels) break;
+        for (std::size_t position = ladder_.best<side>();
+             position != detail::Ladder::NONE && depth.size() < levels;
+             position = ladder_.after<side>(position)) {
 
-            const LevelData& level = sideData.at(price);
-            depth.push_back({ price, level.qty_, level.count_ });
+            const detail::LevelData& data = ladder_.level(position).data;
+            depth.push_back({ ladder_.priceOf(position), data.qty_, data.count_ });
         }
         return depth;
     }
@@ -153,7 +123,7 @@ private:
 public:
     explicit OrderBook(BookConfig config = {});
 
-    // Not copyable: every node points into this book's own levels and the pool cannot be copied. Moving is fine: the pool hands over its chunks and the containers keep their elements' addresses when moved.
+    // Not copyable: the nodes point into this book. A moved-from book throws std::logic_error when given an order
     OrderBook(const OrderBook&) = delete;
     OrderBook& operator=(const OrderBook&) = delete;
     OrderBook(OrderBook&&) = default;
