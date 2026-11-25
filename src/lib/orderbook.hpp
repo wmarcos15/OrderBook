@@ -62,6 +62,9 @@ private:
     bool matchTop(Order& incoming, std::size_t best, OrderResult& result);
     bool canFullyFill(const Order& order, std::size_t limit, OrderResult& result) const;
 
+    // Gives the order a slot and an entry in the table. If it throws, nothing has changed.
+    detail::OrderNode* store(const Order& order);
+
     // Takes a resting order out of the book. The node is dead after this.
     void removeNode(detail::OrderNode* node);
 

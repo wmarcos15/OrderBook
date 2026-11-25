@@ -17,6 +17,7 @@ add_executable(orderbook_tests
     price_band_test.cpp
     moved_book_test.cpp
     random_test.cpp
+    allocation_test.cpp
 )
 
 target_link_libraries(orderbook_tests
