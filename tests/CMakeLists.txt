@@ -8,6 +8,7 @@ add_executable(orderbook_tests
     side_index_test.cpp
     ladder_test.cpp
     price_level_test.cpp
+    moved_book_test.cpp
 )
 
 target_link_libraries(orderbook_tests
