@@ -384,6 +384,15 @@ TEST(BitmapTest, Previous_BitsAroundPosition262144_FindsTheRightBit) {
     EXPECT_EQ(bitmap.previous(262'142), NONE);
 }
 
+// 4096 positions are 64 words, so the word after the last one is past the end of the summary
+TEST(BitmapTest, Next_EmptyLastWordOf4096Positions_ReturnsNone) {
+    Bitmap bitmap(4'096);
+    bitmap.set(0);
+
+    EXPECT_EQ(bitmap.next(1), NONE);
+    EXPECT_EQ(bitmap.next(4'095), NONE);
+}
+
 TEST(BitmapTest, Next_LastBitCleared_ReturnsNone) {
     Bitmap bitmap(1'000'000);
     bitmap.set(999'999);
