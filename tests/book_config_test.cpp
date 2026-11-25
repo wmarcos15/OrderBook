@@ -47,9 +47,16 @@ TEST(BookConfigTest, Constructor_OnePriceBand_Accepted) {
     EXPECT_NE(book.getOrder(id), nullptr);
 }
 
-TEST(BookConfigTest, Constructor_TickNotPositive_Throws) {
-    expectRejected({.tickSize = 0});
-    expectRejected({.tickSize = -5});
+// With the band on the tick, so that only the check of the tick can reject it
+TEST(BookConfigTest, Constructor_TickNotPositive_ThrowsBecauseOfTheTick) {
+    for (Price tick : {0, -1, -5}) {
+        try {
+            OrderBook book(BookConfig {.tickSize = tick, .minPrice = 5, .maxPrice = 1'000});
+            ADD_FAILURE() << "tick " << tick << " was accepted";
+        } catch (const std::invalid_argument& error) {
+            EXPECT_STREQ(error.what(), "tickSize must be greater than 0") << "tick " << tick;
+        }
+    }
 }
 
 TEST(BookConfigTest, Constructor_MinPriceNotPositive_Throws) {
