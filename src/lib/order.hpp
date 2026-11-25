@@ -18,7 +18,6 @@ class Order {
     public:
         Order(OrderID id, OwnerID owner, OrderType type, Side side, Price price, Quantity quantity);
 
-        // Defined here so that the compiler can inline them: the book calls them for every order
         OrderID getID() const {return id_;}
         OrderType getType() const {return type_;}
         Side getSide() const {return side_;}

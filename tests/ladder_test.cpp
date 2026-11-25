@@ -26,7 +26,6 @@ constexpr OwnerID OWNER = 1;
 // Stops a walk that never ends, which a broken after would give
 constexpr std::size_t WALK_LIMIT = 1'000;
 
-// The side that does not hold the price
 template<Side side>
 constexpr Side otherSide = (side == Side::buy) ? Side::sell : Side::buy;
 
@@ -44,7 +43,6 @@ static Ids backwardIds(const OrderQueue& queue) {
     return ids;
 }
 
-// Every contained position of one side found by calling after on the last hit
 template<Side side>
 static Positions walk(const Ladder& ladder) {
     Positions found;
@@ -53,12 +51,11 @@ static Positions walk(const Ladder& ladder) {
     return found;
 }
 
-// The ladder is told the position, which the book will look up before adding
 static void place(Ladder& ladder, OrderNode* node) {
     ladder.add(ladder.positionOf(node->order.getPrice()), node);
 }
 
-// The default band is 1 to 100 with a tick of 1, so the price p is at position p - 1
+// Default band is 1 to 100 with a tick of 1, so price p is at position p - 1
 class LadderTest : public ::testing::Test {
 protected:
     Ladder ladder_ {1, 100, 1};
@@ -82,7 +79,6 @@ protected:
         return ladder_.level(static_cast<std::size_t>(price - 1));
     }
 
-    // Mirror-image checks, run once for each side by the tests below
     template<Side side>
     void checkFirstOrderQueueHoldsOnlyIt() {
         OrderNode* node = addNode(side, 40, 100);
@@ -251,7 +247,6 @@ protected:
         EXPECT_EQ(levelAt(41).data.count_, 1u);
     }
 
-    // Three orders at 40, then one of them removed
     template<Side side>
     void checkRemoveFront() {
         OrderNode* first = addNode(side, 40, 10);
@@ -370,7 +365,6 @@ protected:
         EXPECT_FALSE(ladder_.contains<side>(39));
     }
 
-    // A price never holds both sides at once, but it can change side over time
     template<Side side>
     void checkPriceEmptiedThenUsedByTheOtherSide() {
         OrderNode* old = addNode(side, 40, 100);
@@ -403,7 +397,7 @@ protected:
 };
 
 // --------------------------
-// Translation between price and position
+// Price and position
 // --------------------------
 TEST(LadderTranslationTest, TickOfOne_FirstPrice_IsPositionZero) {
     Ladder ladder(1, 100, 1);
@@ -1369,7 +1363,7 @@ TEST(LadderMoveTest, Traits_CopyIsDeletedAndMoveIsAllowed) {
 }
 
 // --------------------------
-// Random operations against a model
+// Random run against a model
 // --------------------------
 namespace {
 
@@ -1391,7 +1385,7 @@ struct Model {
 
 } // namespace
 
-// Bands of 60 prices with a tick of 5, so that prices empty and change side often
+// Bands of 60 prices with a tick of 5, so prices empty and change side often
 TEST(LadderRandomTest, RandomOperations_MatchAModel) {
     constexpr Price MIN_PRICE = 10;
     constexpr Price TICK = 5;
@@ -1420,7 +1414,6 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
         return positionOfPrice(price);
     };
 
-    // Compares one price with the model, and both sides' best
     auto checkPrice = [&](Price price, std::size_t step) {
         const Level& level = ladder.level(positionOfPrice(price));
         Ids expectedIds;
@@ -1449,7 +1442,6 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
         Price touched {0};
 
         if (choice < 40 || live.empty()) {
-            // Add, but never let the two sides share or cross a price
             Side side = (percent(generator) < 50) ? Side::buy : Side::sell;
             Price price = MIN_PRICE + anyPrice(generator) * TICK;
             bool crosses = (side == Side::buy)
@@ -1472,7 +1464,6 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
             EXPECT_EQ(node->level, &ladder.level(positionOfPrice(price)).queue) << "step " << step;
             EXPECT_EQ(node->levelData, &ladder.level(positionOfPrice(price)).data) << "step " << step;
         } else if (choice < 70) {
-            // Fill some or all of a live order, which stays in the queue either way
             OrderNode* node = live[std::uniform_int_distribution<std::size_t>(0, live.size() - 1)(generator)];
             Quantity remaining = node->order.getRemainingQuantity();
             if (remaining == 0) continue;
@@ -1483,7 +1474,6 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
                 if (resting.node == node) resting.remaining -= quantity;
             touched = node->order.getPrice();
         } else {
-            // Remove a live order, filled or not
             std::size_t index = std::uniform_int_distribution<std::size_t>(0, live.size() - 1)(generator);
             OrderNode* node = live[index];
             live[index] = live.back();
@@ -1503,10 +1493,9 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
         if (HasFailure()) FAIL() << "stopped at step " << step;
     }
 
-    // The run must have moved prices between the sides, or it is not testing it
+    // The run must have moved prices between sides
     EXPECT_GT(sideChanges, 50u);
 
-    // Walking each side visits exactly the model's prices, best first
     Positions expectedBuys;
     for (auto it = model.buys.rbegin(); it != model.buys.rend(); ++it)
         expectedBuys.push_back(positionOfPrice(it->first));

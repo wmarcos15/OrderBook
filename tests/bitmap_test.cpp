@@ -14,7 +14,6 @@ using Positions = std::vector<std::size_t>;
 
 constexpr std::size_t NONE = Bitmap::NONE;
 
-// Every position found by calling next again just after the previous hit
 static Positions walkUp(const Bitmap& bitmap) {
     Positions found;
     for (std::size_t position = bitmap.next(0); position != NONE; position = bitmap.next(position + 1))
@@ -22,7 +21,6 @@ static Positions walkUp(const Bitmap& bitmap) {
     return found;
 }
 
-// Every position found by calling previous again just before the last hit
 static Positions walkDown(const Bitmap& bitmap, std::size_t last) {
     Positions found;
     std::size_t position = bitmap.previous(last);
@@ -142,7 +140,7 @@ TEST(BitmapTest, Clear_OneBitOfAFullWord_OthersStayOn) {
 }
 
 // --------------------------
-// Sizes that are not a multiple of 64
+// Odd sizes
 // --------------------------
 TEST(BitmapTest, OddSizes_LastPosition_CanBeSetTestedAndFound) {
     for (std::size_t positions : {63u, 65u, 130u}) {
@@ -384,7 +382,7 @@ TEST(BitmapTest, Previous_BitsAroundPosition262144_FindsTheRightBit) {
     EXPECT_EQ(bitmap.previous(262'142), NONE);
 }
 
-// 4096 positions are 64 words, so the word after the last one is past the end of the summary
+// 4096 positions are 64 words, so the word after the last is past the summary
 TEST(BitmapTest, Next_EmptyLastWordOf4096Positions_ReturnsNone) {
     Bitmap bitmap(4'096);
     bitmap.set(0);
@@ -462,7 +460,7 @@ TEST(BitmapTest, Set_AfterTheWordWasEmptied_IsFoundAgain) {
 }
 
 // --------------------------
-// Searching does not change the bitmap
+// Searching
 // --------------------------
 TEST(BitmapTest, NextAndPrevious_Called_DoNotChangeTheBitmap) {
     Bitmap bitmap(200);
@@ -497,11 +495,11 @@ TEST(BitmapTest, Previous_Repeated_VisitsEveryBitDescending) {
 }
 
 // --------------------------
-// Random comparison with std::set
+// Random operations
 // --------------------------
 TEST(BitmapTest, RandomOperations_AgreeWithStdSet) {
     constexpr std::size_t POSITIONS = 100'000;
-    constexpr std::size_t POSITIONS_IN_USE = 40; // few, so words empty all the time and gaps are long
+    constexpr std::size_t POSITIONS_IN_USE = 40; // few, so words often empty and gaps are long
     constexpr int OPERATIONS = 20'000;
 
     std::mt19937 rng(12345);

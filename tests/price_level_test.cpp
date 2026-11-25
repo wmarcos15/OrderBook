@@ -16,12 +16,10 @@
 
 using namespace orderbook;
 
-// Every buy order belongs to BUYER and every sell order to SELLER, so a trade in
-// these tests is never between an owner and itself.
+// Buys belong to BUYER and sells to SELLER, so nothing trades with itself
 constexpr OwnerID BUYER  = 1;
 constexpr OwnerID SELLER = 2;
 
-// The band of the default book is 1 to 100'000
 constexpr Price DEFAULT_MAX = 100'000;
 
 // A far gap is 90'000 ticks wide
@@ -53,7 +51,6 @@ static Prices tradePrices(const Trades& trades) {
     return prices;
 }
 
-// A book with nothing resting on either side
 static void expectEmptyBook(const OrderBook& book) {
     EXPECT_TRUE(book.empty());
     EXPECT_EQ(book.size(), 0u);
@@ -384,7 +381,7 @@ TEST_F(EdgePriceTest, GetLevelQuantity_PricesJustOutsideTheBand_ReturnZero) {
 }
 
 // --------------------------
-// A band of one price
+// Band of one price
 // --------------------------
 constexpr Price ONLY_PRICE = 50;
 
@@ -555,7 +552,7 @@ TEST_F(OnePriceBandTest, PriceUsedByBothSidesOneAfterTheOther_EachRoundIsClean) 
 }
 
 // --------------------------
-// A tick larger than one
+// Tick above one
 // --------------------------
 class TickBookTest : public ::testing::Test {
 protected:
@@ -718,9 +715,9 @@ TEST(WideTickTest, Book_TickOfAThousand_EndsAndMiddleWork) {
 }
 
 // --------------------------
-// Level queries at prices that cannot hold orders
+// Level queries off the grid
 // --------------------------
-// The book holds buys at 10 and 15 and sells at 95 and 100, so a wrong answer would show
+// The book holds buys at 10 and 15 and sells at 95 and 100
 class IllegalPriceTest : public ::testing::Test {
 protected:
     OrderBook book_ {BookConfig {5, 10, 100}};
@@ -818,7 +815,7 @@ TEST(IllegalPriceEmptyBookTest, LevelQueries_IllegalPricesOnAnEmptyBook_ReturnZe
 }
 
 // --------------------------
-// Queries for the other side of a price
+// Other side of a price
 // --------------------------
 TEST_F(PriceLevelTest, LevelQueries_BuysAskedAtAPriceThatOnlyHasSells_ReturnZero) {
     book_.addOrder(SELLER, OrderType::GTC, Side::sell, 60, 8);
@@ -1038,7 +1035,6 @@ struct ExpectedLevel {
     std::size_t count;
 };
 
-// The three levels of restFarLevels, best first for each side
 std::vector<ExpectedLevel> farLevels(Side side) {
     std::vector<ExpectedLevel> levels {{1, 5, 1}, {50'000, 12, 2}, {DEFAULT_MAX, 20, 1}};
     if (side == Side::buy) std::reverse(levels.begin(), levels.end());
@@ -1051,7 +1047,6 @@ class FarDepthTest : public ::testing::Test {
 protected:
     OrderBook book_;
 
-    // Three levels, 50'000 ticks apart, the middle one with two orders
     void restFarLevels(Side side) {
         OwnerID owner = (side == Side::buy) ? BUYER : SELLER;
         book_.addOrder(owner, OrderType::GTC, side, DEFAULT_MAX, 20);
@@ -1166,7 +1161,7 @@ TEST_F(FarDepthTest, GetDepth_EmptySide_ReturnsNothingForAnyCount) {
 }
 
 // --------------------------
-// A band of a million prices
+// Band of a million prices
 // --------------------------
 constexpr Price MILLION = 1'000'000;
 
@@ -1279,7 +1274,7 @@ TEST_F(WideBandTest, Rest_ThousandBuysSpreadOverTheBand_CancelledOneByOneInOrder
 }
 
 // --------------------------
-// A side that empties and is used again
+// Side emptied and reused
 // --------------------------
 TEST_F(PriceLevelTest, SellSide_EmptiedByCancelsManyTimes_EveryRoundStartsClean) {
     for (Price round {0}; round < 200; ++round) {
@@ -1393,14 +1388,12 @@ TEST_F(PriceLevelTest, Price_RemainderRestsOnTheOtherSideEachTime_LevelFollowsTh
     book_.addOrder(BUYER, OrderType::GTC, Side::buy, 500, 10);
 
     for (int round {0}; round < 50; ++round) {
-        // The sell takes the 10 resting and leaves 5 of its own
         auto sell = book_.addOrder(SELLER, OrderType::GTC, Side::sell, 500, 15);
         ASSERT_EQ(totalTraded(sell.trades), 10u) << "round " << round;
         ASSERT_EQ(book_.getLevelQuantity(Side::sell, 500), 5u) << "round " << round;
         ASSERT_EQ(book_.getLevelQuantity(Side::buy, 500), 0u) << "round " << round;
         ASSERT_EQ(book_.getBestBid(), nullptr) << "round " << round;
 
-        // The buy takes the 5 resting and leaves 10 of its own
         auto buy = book_.addOrder(BUYER, OrderType::GTC, Side::buy, 500, 15);
         ASSERT_EQ(totalTraded(buy.trades), 5u) << "round " << round;
         ASSERT_EQ(book_.getLevelQuantity(Side::buy, 500), 10u) << "round " << round;
@@ -1646,14 +1639,12 @@ class FarFillOrKillTest : public ::testing::Test {
 protected:
     OrderBook book_;
 
-    // Ten units on the asks over three far levels
     void restAsks() {
         book_.addOrder(SELLER, OrderType::GTC, Side::sell, 10, 3);
         book_.addOrder(SELLER, OrderType::GTC, Side::sell, 45'000, 3);
         book_.addOrder(SELLER, OrderType::GTC, Side::sell, 90'010, 4);
     }
 
-    // Ten units on the bids over three far levels
     void restBids() {
         book_.addOrder(BUYER, OrderType::GTC, Side::buy, 99'990, 3);
         book_.addOrder(BUYER, OrderType::GTC, Side::buy, 55'000, 3);
@@ -1746,7 +1737,7 @@ TEST_F(FarFillOrKillTest, Sell_FillsTheFirstTwoLevelsOnly_LeavesTheFarthestUntou
 }
 
 // --------------------------
-// Randomised run against a reference book
+// Random run against a reference
 // --------------------------
 namespace {
 
@@ -1767,8 +1758,7 @@ struct ReferenceInfo {
     Quantity quantity;
 };
 
-// Price-time priority written the plain way, to compare the engine with.
-// Every order has an owner of its own in these runs, so nothing ever trades with itself.
+// Price-time priority written the plain way, to compare the engine with
 class ReferenceBook {
 private:
     struct Location {
@@ -1937,7 +1927,6 @@ public:
         return locations_.size();
     }
 
-    // The resting orders in a fixed order, so that a seeded run picks the same ones every time
     std::vector<OrderID> liveIDs() const {
         std::vector<OrderID> ids;
         for (const auto& [price, queue] : bids_)
@@ -1975,7 +1964,7 @@ bool sameDepth(const std::vector<LevelView>& actual, const std::vector<LevelView
     return true;
 }
 
-// What the run reached, so that a test can tell it did not skip the interesting cases
+// What the run reached, to check it hit the interesting cases
 struct RunCounts {
     std::size_t trades {0};
     std::size_t emptyBooks {0};
@@ -1983,8 +1972,7 @@ struct RunCounts {
     std::size_t movedOrders {0};
 };
 
-// Prices are a narrow cluster around the middle of the band mixed with far outliers.
-// Outliers of a side sit on its own side of the cluster, a few cross the whole band.
+// A narrow cluster mid-band plus far outliers, a few crossing the whole band
 class PriceGenerator {
 private:
     Price tickSize_;
@@ -2023,7 +2011,6 @@ public:
     }
 };
 
-// Every operation is applied to both books and the two are compared in full after it
 void runAgainstReference(const BookConfig& config, Price clusterTicks, Price gapTicks, unsigned seed, RunCounts& counts) {
     constexpr std::size_t STEPS = 20'000;
 
@@ -2038,7 +2025,6 @@ void runAgainstReference(const BookConfig& config, Price clusterTicks, Price gap
 
     auto randomSide = [&]() { return (percent(generator) < 50) ? Side::buy : Side::sell; };
 
-    // A resting id most of the time, otherwise one that is gone or never existed
     auto pickID = [&]() {
         std::vector<OrderID> live = reference.liveIDs();
         if (!live.empty() && percent(generator) < 85)
@@ -2103,7 +2089,6 @@ void runAgainstReference(const BookConfig& config, Price clusterTicks, Price gap
             }
         }
 
-        // The whole book is compared, not only what the step touched
         ASSERT_EQ(book.size(), reference.size()) << "step " << step;
         ASSERT_EQ(book.empty(), reference.size() == 0) << "step " << step;
         for (Side side : {Side::buy, Side::sell}) {

@@ -41,23 +41,19 @@ private:
     detail::Ladder ladder_;
     detail::OrderTable<> orders_;
 
-    // The reserve of getDepth: covers the usual requests in one allocation, larger ones still work
     static constexpr std::size_t DEPTH_RESERVE = 32;
 
-    // Runs before the ladder is built, which needs a valid config
+    // Runs before the ladder is built
     static BookConfig validated(const BookConfig& config);
 
-    // Always throws: the price has no position
     [[noreturn]] void rejectPrice(Price price) const;
 
-    // Whether `position` is beyond `limit` for someone trading against the `opposite` side
     template<Side opposite>
     static bool isBeyond(std::size_t position, std::size_t limit) {
         if constexpr (opposite == Side::sell) return position > limit;
         else return position < limit;
     }
 
-    // The position of the level if that side has orders there, NONE otherwise
     std::size_t positionWithOrders(Side side, Price price) const;
 
     OrderResult addAt(std::size_t position, OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
@@ -71,7 +67,6 @@ private:
 
     std::unordered_map<OwnerID, SelfTradePolicy> policies_;
 
-    // Asks for the best level again for every order, since matching changes it
     template<Side opposite>
     bool matchAgainst(Order& incoming, std::size_t limit, OrderResult& result) {
         while (incoming.getRemainingQuantity() > 0) {
@@ -128,7 +123,7 @@ private:
 public:
     explicit OrderBook(BookConfig config = {});
 
-    // Not copyable: every node points into this book's own ladder and the pool cannot be copied. Moving is fine: the pool hands over its chunks and the ladder's levels keep their addresses when moved. A moved-from book has no levels, so it throws std::logic_error when given an order.
+    // Not copyable: the nodes point into this book. A moved-from book throws std::logic_error when given an order
     OrderBook(const OrderBook&) = delete;
     OrderBook& operator=(const OrderBook&) = delete;
     OrderBook(OrderBook&&) = default;

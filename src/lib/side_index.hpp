@@ -21,20 +21,18 @@ private:
         else return a < b;
     }
 
-    // The closest position with orders from `position` (included) towards worse prices
     std::size_t search(std::size_t position) const {
         if constexpr (side == Side::buy) return bitmap_.previous(position);
         else return bitmap_.next(position);
     }
 
 public:
-    // Returned when there is no position to find
     static constexpr std::size_t NONE = Bitmap::NONE;
 
     explicit SideIndex(std::size_t positions) : bitmap_(positions) {}
     SideIndex(const SideIndex&) = delete;
     SideIndex& operator=(const SideIndex&) = delete;
-    // A moved-from vector is empty but a moved-from number is not, so best_ is reset by hand
+    // Moving only copies a number, so best_ is reset by hand
     SideIndex(SideIndex&& other) noexcept
         : bitmap_(std::move(other.bitmap_)),
         best_(std::exchange(other.best_, NONE)) {}
@@ -50,12 +48,10 @@ public:
         return bitmap_.test(position);
     }
 
-    // NONE if there are no orders
     std::size_t best() const {
         return best_;
     }
 
-    // The next position with orders strictly worse than `position`, NONE if there is none
     std::size_t after(std::size_t position) const {
         if constexpr (side == Side::buy) {
             // Checked before the subtraction: position is unsigned and would wrap around

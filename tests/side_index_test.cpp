@@ -18,7 +18,6 @@ using Positions = std::vector<std::size_t>;
 
 constexpr std::size_t NONE = Bitmap::NONE;
 
-// Small enough to read, positions 0 to 9
 constexpr std::size_t SMALL = 10;
 
 template<Side side>
@@ -29,10 +28,9 @@ static SideIndex<side> makeIndex(std::size_t positions, const Positions& contain
     return index;
 }
 
-// Stops a walk that never ends, which a broken after would give
+// Caps the walk in case after never ends
 constexpr std::size_t WALK_LIMIT = 1'000;
 
-// Every contained position found by calling after again on the last hit
 template<Side side>
 static Positions walk(const SideIndex<side>& index) {
     Positions found;
@@ -874,7 +872,7 @@ TEST(SideIndexTest, BuyIndex_MoveAssign_SourceAssignedNewValueIsUsable) {
 }
 
 // --------------------------
-// Random operations against std::set
+// Random operations
 // --------------------------
 template<Side side>
 static std::size_t modelBest(const std::set<std::size_t>& model) {
@@ -901,7 +899,6 @@ static Positions modelWalk(const std::set<std::size_t>& model) {
         return Positions(model.rbegin(), model.rend());
 }
 
-// Few positions are in use out of many, so the index is sparse and often empty
 template<Side side>
 static void runRandomOperations(std::size_t positions, std::size_t maxInUse, unsigned seed) {
     constexpr std::size_t STEPS = 20'000;
@@ -938,7 +935,7 @@ static void runRandomOperations(std::size_t positions, std::size_t maxInUse, uns
         if (model.empty()) ++emptySteps;
     }
 
-    // The run must have visited the empty state, or it is not testing it
+    // The empty state must be reached
     EXPECT_GT(emptySteps, 100u);
 }
 

@@ -8,16 +8,13 @@
 
 using namespace orderbook;
 
-// Every buy order belongs to BUYER and every sell order to SELLER, so a trade in
-// these tests is never between an owner and itself.
+// Different owners, so no trade is a self trade
 constexpr OwnerID BUYER  = 1;
 constexpr OwnerID SELLER = 2;
 
-// A legal price of the default book that is not one of the resting prices below
 constexpr Price LEGAL_PRICE = 100;
 
-// What a moved-from book must refuse: a logic_error, and not the invalid_argument
-// that means the caller passed a bad price or quantity
+// A moved-from book throws logic_error, not invalid_argument
 template<typename Action>
 static void expectLogicErrorOnly(Action action) {
     try {
@@ -32,7 +29,6 @@ static void expectLogicErrorOnly(Action action) {
     }
 }
 
-// The two ways of moving a book. Each test runs once for each of them.
 struct MoveConstruct {
     static void apply(OrderBook& source, std::optional<OrderBook>& target) {
         target.emplace(std::move(source));
@@ -41,7 +37,7 @@ struct MoveConstruct {
 
 struct MoveAssign {
     static void apply(OrderBook& source, std::optional<OrderBook>& target) {
-        // The target has orders of its own, which the assignment must replace
+        // Target has orders to be replaced
         target.emplace();
         target->addOrder(BUYER, OrderType::GTC, Side::buy, 40, 5);
         *target = std::move(source);
@@ -50,7 +46,6 @@ struct MoveAssign {
 
 using MoveKinds = ::testing::Types<MoveConstruct, MoveAssign>;
 
-// source_ holds two buys at 99 and a sell at 101 and is then moved into target_
 template<typename Mover>
 class MovedBookTest : public ::testing::Test {
 protected:
@@ -68,7 +63,6 @@ protected:
         Mover::apply(source_, target_);
     }
 
-    // Everything a caller might do to the moved-from book, none of which may reach the target
     void touchSource() {
         source_.cancelOrder(firstBidID_);
         source_.cancelOrder(askID_);
@@ -82,7 +76,7 @@ protected:
         try {
             source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10);
         } catch (const std::logic_error&) {
-            // Refusing is what a moved-from book does, and the target must not notice either way
+            // Refusing is expected
         }
     }
 };
@@ -174,7 +168,7 @@ TYPED_TEST(MovedBookTest, ModifyOrder_IdThatWasInIt_LeavesTheTargetAlone) {
 }
 
 // --------------------------
-// Looking things up
+// Lookups
 // --------------------------
 TYPED_TEST(MovedBookTest, GetOrder_BidThatWasInIt_ReturnsNullptr) {
     EXPECT_EQ(this->source_.getOrder(this->firstBidID_), nullptr);
@@ -293,7 +287,7 @@ TYPED_TEST(MovedBookTest, Target_AfterTouchingTheSource_CanTakeNewOrders) {
 }
 
 // --------------------------
-// Assigning a fresh book to the moved-from one
+// Fresh book assigned
 // --------------------------
 TYPED_TEST(MovedBookTest, AssignedFreshBook_StartsEmpty) {
     this->source_ = OrderBook();

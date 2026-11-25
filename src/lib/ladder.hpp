@@ -10,27 +10,22 @@
 
 namespace orderbook::detail {
 
-// The orders resting at one price, and their totals
 struct Level {
     OrderQueue queue;
     LevelData data;
 };
 
-// One level for every legal price, from minPrice to maxPrice in steps of tickSize.
-// A price never holds buys and sells at once, they would have traded, so both sides
-// share the levels and each has its own index of which ones are in use.
-// The ladder owns the levels but not the nodes, which belong to the book.
+// Both sides share the levels: a price never holds buys and sells at once
 class Ladder {
 private:
     Price minPrice_;
     Price maxPrice_;
     Price tickSize_;
-    // Never grows, so a Level never moves in memory and the nodes can point into it
+    // Never grows, so the nodes can point into it
     std::vector<Level> levels_;
     SideIndex<Side::buy> bids_;
     SideIndex<Side::sell> asks_;
 
-    // Checked here and not in the constructor body, because the vector is sized first
     static std::size_t levelsFor(Price minPrice, Price maxPrice, Price tickSize) {
         assert(tickSize > 0);
         assert(minPrice > 0 && minPrice <= maxPrice);
@@ -55,10 +50,8 @@ private:
     }
 
 public:
-    // Returned when there is no position to find
     static constexpr std::size_t NONE = Bitmap::NONE;
 
-    // The book has already checked that the arguments are valid
     Ladder(Price minPrice, Price maxPrice, Price tickSize)
         : minPrice_ {minPrice}, maxPrice_ {maxPrice}, tickSize_ {tickSize},
         levels_(levelsFor(minPrice, maxPrice, tickSize)),
@@ -68,9 +61,8 @@ public:
     Ladder(Ladder&&) = default;
     Ladder& operator=(Ladder&&) = default;
 
-    // NONE if the price is not one of the levels
     std::size_t positionOf(Price price) const {
-        // Checked before the subtraction, which would overflow for a very negative price
+        // Checked first: the subtraction would overflow for a very negative price
         if (price < minPrice_ || price > maxPrice_) return NONE;
         if ((price - minPrice_) % tickSize_ != 0) return NONE;
 
@@ -95,13 +87,11 @@ public:
         return index<side>().contains(position);
     }
 
-    // NONE if the side has no orders
     template<Side side>
     std::size_t best() const {
         return index<side>().best();
     }
 
-    // The next position with orders strictly worse than `position`, NONE if there is none
     template<Side side>
     std::size_t after(std::size_t position) const {
         return index<side>().after(position);
@@ -125,21 +115,18 @@ public:
         if (wasEmpty) addToIndex(side, position);
     }
 
-    // The node stays in its queue, the book removes it when it has no quantity left
     static void fill(OrderNode* node, Quantity quantity) {
         assert(quantity <= node->order.getRemainingQuantity());
         node->order.fill(quantity);
         node->levelData->qty_ -= quantity;
     }
 
-    // Does not free the node, the book does
     void remove(OrderNode* node) {
         node->level->unlink(node);
         --node->levelData->count_;
         node->levelData->qty_ -= node->order.getRemainingQuantity();
 
         if (!node->level->empty()) return;
-        // Only looked up here, so that the node does not have to store its position
         removeFromIndex(node->order.getSide(), positionOf(node->order.getPrice()));
     }
 };

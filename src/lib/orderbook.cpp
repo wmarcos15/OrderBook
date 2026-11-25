@@ -10,8 +10,7 @@
 
 namespace orderbook {
 
-// A function and not the constructor body: the ladder is built from the config
-// right after it, so the checks have to run first
+// Runs before the ladder is built
 BookConfig OrderBook::validated(const BookConfig& config) {
     if (config.tickSize <= 0)
         throw std::invalid_argument("tickSize must be greater than 0");
@@ -58,7 +57,7 @@ bool OrderBook::empty() const {
     return pool_.size() == 0;
 }
 
-// Checked before reading the level: a position of the other side holds that side's orders
+// The level is shared, so check the side's index first
 std::size_t OrderBook::positionWithOrders(Side side, Price price) const {
     std::size_t position = ladder_.positionOf(price);
     if (position == detail::Ladder::NONE) return detail::Ladder::NONE;
@@ -114,7 +113,7 @@ void OrderBook::rejectPrice(Price price) const {
     if (price % config_.tickSize != 0)
         throw std::invalid_argument("price not on tick");
 
-    // A legal price without a position: the ladder has no levels
+    // A moved-from book has no levels
     throw std::logic_error("the book has been moved from");
 }
 
@@ -169,7 +168,6 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
     return addAt(position, owner, type, side, price, qty);
 }
 
-// The price has already been validated, and `position` is its level
 OrderResult OrderBook::addAt(std::size_t position, OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
     OrderID id = nextID_++;
     Order incoming(id, owner, type, side, price, qty);
@@ -204,7 +202,7 @@ OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
                                                : ladder_.best<Side::buy>() == detail::Ladder::NONE;
     if (oppositeIsEmpty) return {nextID_++, {}};
 
-    // An IOC never rests, so the edge of the band is as good as the worst price of the side
+    // An IOC never rests, so the band edge works as the worst price
     Price price = (side == Side::buy) ? config_.maxPrice : config_.minPrice;
     return addAt(ladder_.positionOf(price), owner, OrderType::IOC, side, price, qty);
 }
