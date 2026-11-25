@@ -145,16 +145,13 @@ bool OrderBook::matchTop(Order& incoming, std::size_t best, OrderResult& result)
             return false;
         }
 
-        OrderID restingID = resting->order.getID();   // read before the slot is released
-        removeNode(resting);
+        result.cancelledOrders.push_back(resting->order.getID());   // first: it can throw
         result.status = OrderStatus::selfTradeCancelledOldest;
-        result.cancelledOrders.push_back(restingID);
+        removeNode(resting);
         return true;
     }
 
     Quantity qty = std::min(incoming.getRemainingQuantity(), resting->order.getRemainingQuantity());
-    incoming.fill(qty);
-    ladder_.fill(resting, qty);
 
     bool incomingIsBuy = incoming.getSide() == Side::buy;
     OrderID bidID = incomingIsBuy ? incoming.getID() : resting->order.getID();
@@ -162,6 +159,10 @@ bool OrderBook::matchTop(Order& incoming, std::size_t best, OrderResult& result)
     OwnerID bidOwner = incomingIsBuy ? incoming.getOwnerID() : resting->order.getOwnerID();
     OwnerID askOwner = incomingIsBuy ? resting->order.getOwnerID() : incoming.getOwnerID();
     result.trades.push_back({ bidID, askID, ladder_.priceOf(best), qty, bidOwner, askOwner });
+
+    // After the push, which can throw
+    incoming.fill(qty);
+    ladder_.fill(resting, qty);
 
     if (resting->order.isFilled()) removeNode(resting);
     return true;
@@ -198,10 +199,8 @@ OrderResult OrderBook::addAt(std::size_t position, OwnerID owner, OrderType type
         return result;
 
     if (!incoming.isFilled()) {
-        // The slot is taken only now: an order that never rests allocates nothing
-        detail::OrderNode* node = pool_.allocate(incoming);
-        ladder_.add(position, node);
-        orders_.insert(id, node);
+        // Only now: an order that never rests allocates nothing
+        ladder_.add(position, store(incoming));
     }
 
     return result;
@@ -219,6 +218,17 @@ OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
     // An IOC never rests, so the band edge works as the worst price
     Price price = (side == Side::buy) ? config_.maxPrice : config_.minPrice;
     return addAt(ladder_.positionOf(price), owner, OrderType::IOC, side, price, qty);
+}
+
+detail::OrderNode* OrderBook::store(const Order& order) {
+    detail::OrderNode* node = pool_.allocate(order);
+    try {
+        orders_.insert(order.getID(), node);
+    } catch (...) {
+        pool_.release(node);
+        throw;
+    }
+    return node;
 }
 
 void OrderBook::removeNode(detail::OrderNode* node) {
@@ -259,11 +269,26 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     if (newPrice == oldPrice && newQty < oldQty) {
         ladder_.fill(node, oldQty - newQty);
         return OrderResult({orderID, {}});
-    } else { // Unfriendly
-        removeNode(node);
-        return addAt(position, owner, type, side, newPrice, newQty);
     }
 
+    // Unfriendly
+    Order incoming(nextID_++, owner, type, side, newPrice, newQty);
+    OrderResult result {incoming.getID(), {}};
+    detail::OrderNode* moved {nullptr};
+
+    // Matching only touches the other side, so the original can stay until nothing can throw
+    try {
+        if (match(incoming, position, result) && !incoming.isFilled())
+            moved = store(incoming);
+    } catch (...) {
+        // It can only stay if it has not been replaced in part
+        if (!result.trades.empty() || !result.cancelledOrders.empty()) removeNode(node);
+        throw;
+    }
+
+    removeNode(node);
+    if (moved != nullptr) ladder_.add(position, moved);
+    return result;
 }
 
 } // namespace orderbook

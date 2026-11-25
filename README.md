@@ -193,6 +193,9 @@ Semantics worth knowing:
   copying is a compile error rather than a silent bug. Pass a book by
   reference, or `std::move` it. A book that has been moved from is empty, and
   `addOrder` on it throws `std::logic_error`.
+- If memory runs out, the call throws `std::bad_alloc` and the book stays
+  usable. What the call had already traded stays traded but is not reported;
+  if it had not traded yet, nothing has changed except that an ID is used.
 - The `OrderBook` constructor throws `std::invalid_argument` if the config is
   inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
   `maxPrice`, or either band edge not a multiple of `tickSize`. `modifyOrder` returns `std::nullopt` for an unknown ID.
@@ -1052,6 +1055,7 @@ OrderBook/
 │   ├── depth_test.cpp          # depth snapshot
 │   ├── price_band_test.cpp     # edges, ticks, illegal prices, the next best price, levels that change side
 │   ├── moved_book_test.cpp     # a book that has been moved
+│   ├── allocation_test.cpp     # running out of memory, and calls that allocate nothing
 │   ├── random_test.cpp         # random runs against the reference book
 │   ├── pool_test.cpp           # the pool: reuse order, growth, address stability, move
 │   ├── order_queue_test.cpp    # the queue: push, pop, unlink at every position, relinking
