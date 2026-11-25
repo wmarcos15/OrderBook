@@ -176,6 +176,9 @@ Semantics worth knowing:
   all it has, and an empty side or `levels == 0` returns an empty vector.
   Quantities are what is still resting, added over all owners. The result is
   a copy, so it does not change when the book does.
+- The total quantity of a level is a 32-bit number, so `getLevelQuantity` and
+  `getDepth` report a wrapped one for a level that holds more than
+  4,294,967,295 units. Matching does not use it and is not affected.
 - Owner IDs are chosen by the caller and passed as the first argument of
   `addOrder` / `addMarketOrder`; the book only stores them and copies them
   onto trades. A `modifyOrder` keeps the original owner, including when it
