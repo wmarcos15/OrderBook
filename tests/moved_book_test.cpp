@@ -212,6 +212,21 @@ TYPED_TEST(MovedBookTest, Target_MovedAgain_StillWorks) {
     expectEmptyBook(*this->target_);
 }
 
+TYPED_TEST(MovedBookTest, Target_MovedOntoItself_KeepsEverythingAndStaysUsable) {
+    OrderBook& same = *this->target_;
+
+    *this->target_ = std::move(same);
+
+    this->expectTargetHoldsEverything();
+    EXPECT_EQ(this->target_->getSelfTradePolicy(BUYER), SelfTradePolicy::cancelOldest);
+
+    this->target_->cancelOrder(this->firstBid_);
+    EXPECT_EQ(this->target_->addMarketOrder(SELLER, Side::sell, 30).trades.size(), 1u);
+    EXPECT_EQ(this->target_->addOrder(BUYER, OrderType::GTC, Side::buy, 95, 10).orderID, this->ask_ + 2);
+    EXPECT_EQ(levelsOf(*this->target_, Side::buy), (Levels {{95, 10, 1}}));
+    EXPECT_EQ(levelsOf(*this->target_, Side::sell), (Levels {{101, 20, 1}}));
+}
+
 TEST(MovedBookConfigTest, OntoABookWithAnotherBand_TakesTheBandOfTheSource) {
     OrderBook source(BookConfig {5, 10, 200});
     source.addOrder(BUYER, OrderType::GTC, Side::buy, 15, 10);

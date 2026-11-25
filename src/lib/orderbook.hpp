@@ -127,7 +127,7 @@ public:
     OrderBook(const OrderBook&) = delete;
     OrderBook& operator=(const OrderBook&) = delete;
     OrderBook(OrderBook&&) = default;
-    OrderBook& operator=(OrderBook&&) = default;
+    OrderBook& operator=(OrderBook&& other) noexcept;
 
     std::size_t size() const; // total order count
     const Order* getBestBid() const;
