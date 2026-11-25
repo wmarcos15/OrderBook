@@ -1,6 +1,8 @@
 #pragma once
 #include "types.hpp"
 
+#include <algorithm>
+
 namespace orderbook {
 
 class Order {
@@ -25,7 +27,7 @@ class Order {
         Quantity getRemainingQuantity() const {return remainingQuantity_;}
         OwnerID getOwnerID() const {return ownerID_;}
         bool isFilled() const {return remainingQuantity_ == 0;}
-        void fill(Quantity qty);
+        void fill(Quantity qty) {remainingQuantity_ -= std::min(remainingQuantity_, qty);}
 };
 
 } // namespace orderbook
