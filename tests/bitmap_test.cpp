@@ -14,9 +14,18 @@ using Positions = std::vector<std::size_t>;
 
 constexpr std::size_t NONE = Bitmap::NONE;
 
+// Where the words of the bitmap and of its summary begin and end: a word is 64
+// positions and a word of the summary is 4096
+static const Positions EDGES {0, 1, 31, 32, 33, 62, 63, 64, 65, 127, 128, 4'094, 4'095, 4'096, 4'097, 8'191, 8'192, 12'287};
+
+constexpr std::size_t LARGE = 3 * 4'096;
+
+// Stops a walk that never ends, which a broken search would give
+constexpr std::size_t WALK_LIMIT = 1'000;
+
 static Positions walkUp(const Bitmap& bitmap) {
     Positions found;
-    for (std::size_t position = bitmap.next(0); position != NONE; position = bitmap.next(position + 1))
+    for (std::size_t position = bitmap.next(0); position != NONE && found.size() < WALK_LIMIT; position = bitmap.next(position + 1))
         found.push_back(position);
     return found;
 }
@@ -24,7 +33,7 @@ static Positions walkUp(const Bitmap& bitmap) {
 static Positions walkDown(const Bitmap& bitmap, std::size_t last) {
     Positions found;
     std::size_t position = bitmap.previous(last);
-    while (position != NONE) {
+    while (position != NONE && found.size() < WALK_LIMIT) {
         found.push_back(position);
         if (position == 0) break;
         position = bitmap.previous(position - 1);
@@ -32,466 +41,161 @@ static Positions walkDown(const Bitmap& bitmap, std::size_t last) {
     return found;
 }
 
+// Asks every position for its bit, the next one and the previous one
+static void expectOnlyThese(const Bitmap& bitmap, std::size_t positions, const std::set<std::size_t>& on) {
+    for (std::size_t position {0}; position < positions; ++position) {
+        auto next = on.lower_bound(position);
+        auto above = on.upper_bound(position);
+        ASSERT_EQ(bitmap.test(position), on.contains(position)) << "position " << position;
+        ASSERT_EQ(bitmap.next(position), (next == on.end()) ? NONE : *next) << "position " << position;
+        ASSERT_EQ(bitmap.previous(position), (above == on.begin()) ? NONE : *std::prev(above)) << "position " << position;
+    }
+}
+
 // --------------------------
-// New bitmap
+// Sizes
 // --------------------------
-TEST(BitmapTest, NewBitmap_Test_EveryBitIsOff) {
-    Bitmap bitmap(200);
-
-    for (std::size_t position {0}; position < 200; ++position)
-        EXPECT_FALSE(bitmap.test(position));
+TEST(BitmapTest, NewBitmap_EveryBitIsOff) {
+    for (std::size_t positions : {1u, 63u, 64u, 65u, 130u, 4'095u, 4'096u, 4'097u})
+        expectOnlyThese(Bitmap(positions), positions, {});
 }
 
-TEST(BitmapTest, NewBitmap_Next_ReturnsNone) {
-    Bitmap bitmap(200);
-
-    EXPECT_EQ(bitmap.next(0), NONE);
-}
-
-TEST(BitmapTest, NewBitmap_Previous_ReturnsNone) {
-    Bitmap bitmap(200);
-
-    EXPECT_EQ(bitmap.previous(199), NONE);
-}
-
-TEST(BitmapTest, ZeroPositions_Next_ReturnsNone) {
+TEST(BitmapTest, ZeroPositions_NextIsNone) {
     Bitmap bitmap(0);
 
     EXPECT_EQ(bitmap.next(0), NONE);
 }
 
-TEST(BitmapTest, OnePosition_SetThenFind_Works) {
-    Bitmap bitmap(1);
-
-    bitmap.set(0);
-
-    EXPECT_TRUE(bitmap.test(0));
-    EXPECT_EQ(bitmap.next(0), 0u);
-    EXPECT_EQ(bitmap.previous(0), 0u);
-}
-
-// --------------------------
-// Set, test and clear
-// --------------------------
-TEST(BitmapTest, Set_OneBit_OnlyThatBitIsOn) {
-    for (std::size_t position : {0u, 1u, 31u, 32u, 33u, 63u, 64u, 65u, 127u, 128u}) {
-        Bitmap bitmap(192);
-
-        bitmap.set(position);
-
-        for (std::size_t other {0}; other < 192; ++other)
-            EXPECT_EQ(bitmap.test(other), other == position) << "set " << position << ", test " << other;
-    }
-}
-
-TEST(BitmapTest, Set_Twice_BitStaysOn) {
-    Bitmap bitmap(128);
-
-    bitmap.set(70);
-    bitmap.set(70);
-
-    EXPECT_TRUE(bitmap.test(70));
-}
-
-TEST(BitmapTest, Clear_OneBit_OnlyThatBitIsOff) {
-    for (std::size_t position : {0u, 1u, 31u, 32u, 33u, 63u, 64u, 65u, 127u, 128u}) {
-        Bitmap bitmap(192);
-        for (std::size_t other {0}; other < 192; ++other)
-            bitmap.set(other);
-
-        bitmap.clear(position);
-
-        for (std::size_t other {0}; other < 192; ++other)
-            EXPECT_EQ(bitmap.test(other), other != position) << "clear " << position << ", test " << other;
-    }
-}
-
-TEST(BitmapTest, Clear_Twice_BitStaysOff) {
-    Bitmap bitmap(128);
-    bitmap.set(70);
-
-    bitmap.clear(70);
-    bitmap.clear(70);
-
-    EXPECT_FALSE(bitmap.test(70));
-}
-
-TEST(BitmapTest, Clear_BitThatIsOff_ChangesNothing) {
-    Bitmap bitmap(128);
-    bitmap.set(69);
-    bitmap.set(71);
-
-    bitmap.clear(70);
-
-    EXPECT_FALSE(bitmap.test(70));
-    EXPECT_TRUE(bitmap.test(69));
-    EXPECT_TRUE(bitmap.test(71));
-}
-
-TEST(BitmapTest, Clear_OneBitOfAFullWord_OthersStayOn) {
-    Bitmap bitmap(64);
-    for (std::size_t position {0}; position < 64; ++position)
-        bitmap.set(position);
-
-    bitmap.clear(40);
-
-    EXPECT_EQ(walkUp(bitmap).size(), 63u);
-    EXPECT_FALSE(bitmap.test(40));
-}
-
-// --------------------------
-// Odd sizes
-// --------------------------
-TEST(BitmapTest, OddSizes_LastPosition_CanBeSetTestedAndFound) {
-    for (std::size_t positions : {63u, 65u, 130u}) {
+TEST(BitmapTest, AnySize_FirstAndLastPositionCanBeSetAndFound) {
+    for (std::size_t positions : {1u, 63u, 64u, 65u, 130u, 4'095u, 4'096u, 4'097u, 8'192u}) {
+        SCOPED_TRACE(positions);
         Bitmap bitmap(positions);
-        std::size_t last = positions - 1;
 
-        bitmap.set(last);
+        bitmap.set(positions - 1);
+        expectOnlyThese(bitmap, positions, {positions - 1});
 
-        EXPECT_TRUE(bitmap.test(last)) << positions << " positions";
-        EXPECT_EQ(bitmap.next(0), last) << positions << " positions";
-        EXPECT_EQ(bitmap.previous(last), last) << positions << " positions";
+        bitmap.set(0);
+        expectOnlyThese(bitmap, positions, {0, positions - 1});
     }
 }
 
-// --------------------------
-// Next
-// --------------------------
-TEST(BitmapTest, Next_StartOnASetBit_ReturnsItself) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
-
-    EXPECT_EQ(bitmap.next(10), 10u);
-}
-
-TEST(BitmapTest, Next_BitBelowTheStartInTheSameWord_IsIgnored) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
-
-    EXPECT_EQ(bitmap.next(11), NONE);
-}
-
-TEST(BitmapTest, Next_BitLaterInTheSameWord_IsFound) {
-    Bitmap bitmap(128);
-    bitmap.set(50);
-
-    EXPECT_EQ(bitmap.next(10), 50u);
-}
-
-TEST(BitmapTest, Next_BitInTheNextWord_IsFound) {
-    Bitmap bitmap(192);
-    bitmap.set(100);
-
-    EXPECT_EQ(bitmap.next(10), 100u);
-}
-
-TEST(BitmapTest, Next_SeveralEmptyWordsInBetween_BitIsFound) {
-    Bitmap bitmap(1'000);
-    bitmap.set(900);
-
-    EXPECT_EQ(bitmap.next(10), 900u);
-}
-
-TEST(BitmapTest, Next_AfterTheLastOne_ReturnsNone) {
-    Bitmap bitmap(1'000);
-    bitmap.set(500);
-
-    EXPECT_EQ(bitmap.next(501), NONE);
-    EXPECT_EQ(bitmap.next(999), NONE);
-}
-
-TEST(BitmapTest, Next_FirstPositionPastTheLastWord_ReturnsNone) {
+TEST(BitmapTest, Next_PositionPastTheLastWord_IsNone) {
     Bitmap bitmap(128);
     bitmap.set(127);
 
     EXPECT_EQ(bitmap.next(128), NONE);
-}
-
-TEST(BitmapTest, Next_HugePosition_ReturnsNone) {
-    Bitmap bitmap(128);
-    bitmap.set(127);
-
     EXPECT_EQ(bitmap.next(std::numeric_limits<std::size_t>::max()), NONE);
 }
 
-TEST(BitmapTest, Next_WordEdges_FindsTheRightBit) {
-    Bitmap bitmap(256);
-    bitmap.set(63);
-    bitmap.set(64);
-    bitmap.set(127);
-    bitmap.set(128);
+// --------------------------
+// Set and clear
+// --------------------------
+TEST(BitmapTest, Set_OneBit_OnlyItIsOn) {
+    for (std::size_t position : EDGES) {
+        SCOPED_TRACE(position);
+        Bitmap bitmap(LARGE);
 
-    EXPECT_EQ(bitmap.next(0), 63u);
-    EXPECT_EQ(bitmap.next(63), 63u);
-    EXPECT_EQ(bitmap.next(64), 64u);
-    EXPECT_EQ(bitmap.next(65), 127u);
-    EXPECT_EQ(bitmap.next(127), 127u);
-    EXPECT_EQ(bitmap.next(128), 128u);
-    EXPECT_EQ(bitmap.next(129), NONE);
+        bitmap.set(position);
+
+        expectOnlyThese(bitmap, LARGE, {position});
+    }
+}
+
+TEST(BitmapTest, SetAndClear_OneBit_BitmapIsEmptyAgain) {
+    for (std::size_t position : EDGES) {
+        SCOPED_TRACE(position);
+        Bitmap bitmap(LARGE);
+        bitmap.set(position);
+
+        bitmap.clear(position);
+        expectOnlyThese(bitmap, LARGE, {});
+
+        bitmap.set(position);
+        expectOnlyThese(bitmap, LARGE, {position});
+    }
+}
+
+TEST(BitmapTest, Clear_OneBitOfAFullBitmap_OnlyItIsOff) {
+    for (std::size_t position : EDGES) {
+        SCOPED_TRACE(position);
+        Bitmap bitmap(LARGE);
+        std::set<std::size_t> on;
+        for (std::size_t other {0}; other < LARGE; ++other) {
+            bitmap.set(other);
+            on.insert(on.end(), other);
+        }
+
+        bitmap.clear(position);
+        on.erase(position);
+
+        expectOnlyThese(bitmap, LARGE, on);
+    }
+}
+
+TEST(BitmapTest, SetAndClear_Twice_SameAsOnce) {
+    Bitmap bitmap(128);
+    bitmap.set(69);
+
+    bitmap.set(70);
+    bitmap.set(70);
+    expectOnlyThese(bitmap, 128, {69, 70});
+
+    bitmap.clear(70);
+    bitmap.clear(70);
+    expectOnlyThese(bitmap, 128, {69});
 }
 
 // --------------------------
-// Previous
+// Two bits
 // --------------------------
-TEST(BitmapTest, Previous_StartOnASetBit_ReturnsItself) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
+TEST(BitmapTest, TwoBits_EveryPairOfEdges_FoundAndClearedOneByOne) {
+    for (std::size_t low : EDGES) {
+        for (std::size_t high : EDGES) {
+            if (low >= high) continue;
+            SCOPED_TRACE(::testing::Message() << low << " and " << high);
+            Bitmap bitmap(LARGE);
+            bitmap.set(low);
+            bitmap.set(high);
 
-    EXPECT_EQ(bitmap.previous(10), 10u);
+            EXPECT_EQ(walkUp(bitmap), (Positions {low, high}));
+            EXPECT_EQ(walkDown(bitmap, LARGE - 1), (Positions {high, low}));
+            EXPECT_EQ(bitmap.next(low + 1), high);
+            EXPECT_EQ(bitmap.previous(high - 1), low);
+
+            // The other bit of the word, or of the word of the summary, must stay
+            Bitmap copy = bitmap;
+            copy.clear(low);
+            EXPECT_EQ(walkUp(copy), (Positions {high}));
+            EXPECT_EQ(walkDown(copy, LARGE - 1), (Positions {high}));
+
+            bitmap.clear(high);
+            EXPECT_EQ(walkUp(bitmap), (Positions {low}));
+            EXPECT_EQ(walkDown(bitmap, LARGE - 1), (Positions {low}));
+        }
+    }
 }
 
-TEST(BitmapTest, Previous_BitAboveTheStartInTheSameWord_IsIgnored) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
-
-    EXPECT_EQ(bitmap.previous(9), NONE);
-}
-
-TEST(BitmapTest, Previous_BitEarlierInTheSameWord_IsFound) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
-
-    EXPECT_EQ(bitmap.previous(50), 10u);
-}
-
-TEST(BitmapTest, Previous_BitInThePreviousWord_IsFound) {
-    Bitmap bitmap(192);
-    bitmap.set(10);
-
-    EXPECT_EQ(bitmap.previous(100), 10u);
-}
-
-TEST(BitmapTest, Previous_SeveralEmptyWordsInBetween_BitIsFound) {
-    Bitmap bitmap(1'000);
-    bitmap.set(10);
-
-    EXPECT_EQ(bitmap.previous(900), 10u);
-}
-
-TEST(BitmapTest, Previous_BeforeTheFirstOne_ReturnsNone) {
-    Bitmap bitmap(1'000);
-    bitmap.set(500);
-
-    EXPECT_EQ(bitmap.previous(499), NONE);
-    EXPECT_EQ(bitmap.previous(0), NONE);
-}
-
-TEST(BitmapTest, Previous_PositionZeroOnASetBit_ReturnsZero) {
-    Bitmap bitmap(128);
-    bitmap.set(0);
-
-    EXPECT_EQ(bitmap.previous(0), 0u);
-}
-
-TEST(BitmapTest, Previous_PositionZeroOnAnOffBit_ReturnsNone) {
-    Bitmap bitmap(128);
-    bitmap.set(1);
-
-    EXPECT_EQ(bitmap.previous(0), NONE);
-}
-
-TEST(BitmapTest, Previous_WordEdges_FindsTheRightBit) {
-    Bitmap bitmap(256);
-    bitmap.set(63);
-    bitmap.set(64);
-    bitmap.set(127);
-    bitmap.set(128);
-
-    EXPECT_EQ(bitmap.previous(255), 128u);
-    EXPECT_EQ(bitmap.previous(128), 128u);
-    EXPECT_EQ(bitmap.previous(127), 127u);
-    EXPECT_EQ(bitmap.previous(126), 64u);
-    EXPECT_EQ(bitmap.previous(64), 64u);
-    EXPECT_EQ(bitmap.previous(63), 63u);
-    EXPECT_EQ(bitmap.previous(62), NONE);
-}
-
-// --------------------------
-// Far gaps
-// --------------------------
-TEST(BitmapTest, Next_FirstAndLastOfHundredThousand_JumpsTheGap) {
-    Bitmap bitmap(100'000);
-    bitmap.set(0);
-    bitmap.set(99'999);
-
-    EXPECT_EQ(bitmap.next(1), 99'999u);
-}
-
-TEST(BitmapTest, Previous_FirstAndLastOfHundredThousand_JumpsTheGap) {
-    Bitmap bitmap(100'000);
-    bitmap.set(0);
-    bitmap.set(99'999);
-
-    EXPECT_EQ(bitmap.previous(99'998), 0u);
-}
-
-TEST(BitmapTest, Next_FirstAndLastOfOneMillion_JumpsTheGap) {
+TEST(BitmapTest, AMillionPositions_FirstAndLast_JumpTheGap) {
     Bitmap bitmap(1'000'000);
     bitmap.set(0);
     bitmap.set(999'999);
 
     EXPECT_EQ(bitmap.next(1), 999'999u);
-}
-
-TEST(BitmapTest, Previous_FirstAndLastOfOneMillion_JumpsTheGap) {
-    Bitmap bitmap(1'000'000);
-    bitmap.set(0);
-    bitmap.set(999'999);
-
     EXPECT_EQ(bitmap.previous(999'998), 0u);
-}
 
-TEST(BitmapTest, Next_BitsAroundPosition4096_FindsTheRightBit) {
-    Bitmap bitmap(8'192);
-    bitmap.set(4'095);
-    bitmap.set(4'096);
-
-    EXPECT_EQ(bitmap.next(0), 4'095u);
-    EXPECT_EQ(bitmap.next(4'096), 4'096u);
-    EXPECT_EQ(bitmap.next(4'097), NONE);
-}
-
-TEST(BitmapTest, Previous_BitsAroundPosition4096_FindsTheRightBit) {
-    Bitmap bitmap(8'192);
-    bitmap.set(4'095);
-    bitmap.set(4'096);
-
-    EXPECT_EQ(bitmap.previous(8'191), 4'096u);
-    EXPECT_EQ(bitmap.previous(4'095), 4'095u);
-    EXPECT_EQ(bitmap.previous(4'094), NONE);
-}
-
-TEST(BitmapTest, Next_BitsAroundPosition262144_FindsTheRightBit) {
-    Bitmap bitmap(524'288);
-    bitmap.set(262'143);
-    bitmap.set(262'144);
-
-    EXPECT_EQ(bitmap.next(0), 262'143u);
-    EXPECT_EQ(bitmap.next(262'144), 262'144u);
-    EXPECT_EQ(bitmap.next(262'145), NONE);
-}
-
-TEST(BitmapTest, Previous_BitsAroundPosition262144_FindsTheRightBit) {
-    Bitmap bitmap(524'288);
-    bitmap.set(262'143);
-    bitmap.set(262'144);
-
-    EXPECT_EQ(bitmap.previous(524'287), 262'144u);
-    EXPECT_EQ(bitmap.previous(262'143), 262'143u);
-    EXPECT_EQ(bitmap.previous(262'142), NONE);
-}
-
-// 4096 positions are 64 words, so the word after the last is past the summary
-TEST(BitmapTest, Next_EmptyLastWordOf4096Positions_ReturnsNone) {
-    Bitmap bitmap(4'096);
-    bitmap.set(0);
+    bitmap.clear(999'999);
 
     EXPECT_EQ(bitmap.next(1), NONE);
-    EXPECT_EQ(bitmap.next(4'095), NONE);
+    EXPECT_EQ(bitmap.previous(999'999), 0u);
 }
 
-TEST(BitmapTest, Next_LastBitCleared_ReturnsNone) {
-    Bitmap bitmap(1'000'000);
-    bitmap.set(999'999);
-    bitmap.clear(999'999);
-
-    EXPECT_EQ(bitmap.next(0), NONE);
-}
-
-TEST(BitmapTest, Previous_LastBitCleared_ReturnsNone) {
-    Bitmap bitmap(1'000'000);
-    bitmap.set(999'999);
-    bitmap.clear(999'999);
-
-    EXPECT_EQ(bitmap.previous(999'999), NONE);
-}
-
-// --------------------------
-// Clear and set again
-// --------------------------
-TEST(BitmapTest, Clear_ThenNext_NoLongerFindsTheBit) {
-    Bitmap bitmap(200);
-    bitmap.set(100);
-
-    bitmap.clear(100);
-
-    EXPECT_EQ(bitmap.next(0), NONE);
-}
-
-TEST(BitmapTest, Clear_ThenPrevious_NoLongerFindsTheBit) {
-    Bitmap bitmap(200);
-    bitmap.set(100);
-
-    bitmap.clear(100);
-
-    EXPECT_EQ(bitmap.previous(199), NONE);
-}
-
-TEST(BitmapTest, Clear_OneOfTwoInAWord_NextFindsTheOther) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
-    bitmap.set(20);
-
-    bitmap.clear(10);
-
-    EXPECT_EQ(bitmap.next(0), 20u);
-}
-
-TEST(BitmapTest, Clear_OneOfTwoInAWord_PreviousFindsTheOther) {
-    Bitmap bitmap(128);
-    bitmap.set(10);
-    bitmap.set(20);
-
-    bitmap.clear(20);
-
-    EXPECT_EQ(bitmap.previous(127), 10u);
-}
-
-TEST(BitmapTest, Set_AfterTheWordWasEmptied_IsFoundAgain) {
-    Bitmap bitmap(200);
-    bitmap.set(100);
-    bitmap.clear(100);
-
-    bitmap.set(100);
-
-    EXPECT_EQ(bitmap.next(0), 100u);
-    EXPECT_EQ(bitmap.previous(199), 100u);
-}
-
-// --------------------------
-// Searching
-// --------------------------
-TEST(BitmapTest, NextAndPrevious_Called_DoNotChangeTheBitmap) {
-    Bitmap bitmap(200);
-    bitmap.set(5);
-    bitmap.set(150);
-
-    bitmap.next(0);
-    bitmap.next(6);
-    bitmap.previous(199);
-    bitmap.previous(149);
-
-    EXPECT_EQ(walkUp(bitmap), (Positions {5, 150}));
-}
-
-// --------------------------
-// Walking
-// --------------------------
-TEST(BitmapTest, Next_Repeated_VisitsEveryBitAscending) {
-    Bitmap bitmap(1'000);
-    for (std::size_t position : {0u, 63u, 64u, 300u, 301u, 999u})
+TEST(BitmapTest, EveryEdge_WalkedInBothDirections) {
+    Bitmap bitmap(LARGE);
+    for (std::size_t position : EDGES)
         bitmap.set(position);
 
-    EXPECT_EQ(walkUp(bitmap), (Positions {0, 63, 64, 300, 301, 999}));
-}
-
-TEST(BitmapTest, Previous_Repeated_VisitsEveryBitDescending) {
-    Bitmap bitmap(1'000);
-    for (std::size_t position : {0u, 63u, 64u, 300u, 301u, 999u})
-        bitmap.set(position);
-
-    EXPECT_EQ(walkDown(bitmap, 999), (Positions {999, 301, 300, 64, 63, 0}));
+    EXPECT_EQ(walkUp(bitmap), EDGES);
+    EXPECT_EQ(walkDown(bitmap, LARGE - 1), Positions(EDGES.rbegin(), EDGES.rend()));
 }
 
 // --------------------------

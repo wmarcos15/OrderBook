@@ -8,17 +8,15 @@
 #include <utility>
 #include <vector>
 #include "order_table.hpp"
+#include "queue_test_utils.hpp"
 
 using namespace orderbook;
 using namespace orderbook::detail;
+using namespace orderbook::test;
 
 using SmallTable = OrderTable<4>;
 using Ids = std::vector<OrderID>;
 using Nodes = std::vector<OrderNode>;
-
-static OrderNode makeNode(OrderID id) {
-    return OrderNode(Order(id, 1, OrderType::GTC, Side::buy, 100, 10));
-}
 
 // Fully built before any address is taken, so the nodes never move
 static Nodes makeNodes(const Ids& ids) {
@@ -306,7 +304,7 @@ TEST(OrderTableTest, InsertAndErase_NewestPageEmptiesAThousandTimes_PageCountSta
     EXPECT_EQ(table.pageCount(), 1u);
 }
 
-TEST(OrderTableTest, InsertAndErase_AroundAnOldOrder_OnlyTheOldPageIsKept) {
+TEST(OrderTableTest, InsertAndErase_AroundAnOldOrder_ItsPageAndOneSpareAreKept) {
     SmallTable table;
     Ids ids {1};
     for (OrderID id = 4; id <= 400; ++id)

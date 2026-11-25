@@ -1038,16 +1038,27 @@ OrderBook/
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
-│   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config, depth
-│   ├── matching_test.cpp       # GTC / IOC / FOK / market matching semantics, self-trade prevention
+│   ├── test_utils.hpp          # shared owners, fixtures that run each test for both sides
+│   ├── queue_test_utils.hpp    # shared nodes and walks over a queue
+│   ├── reference_book.hpp      # the rules written the plain way, to compare the book with
+│   ├── book_config_test.cpp    # configuration, and the prices it allows
+│   ├── add_order_test.cpp      # resting, level data, rejected orders, many orders
+│   ├── cancel_order_test.cpp   # cancel, and the best price after it
+│   ├── modify_order_test.cpp   # modify: in place, with a new ID, across the spread
+│   ├── matching_test.cpp       # GTC and IOC: fills, sweeps, time priority, owners
+│   ├── fill_or_kill_test.cpp   # FOK
+│   ├── market_order_test.cpp   # market orders
+│   ├── self_trade_test.cpp     # self-trade prevention
+│   ├── depth_test.cpp          # depth snapshot
+│   ├── price_band_test.cpp     # edges, ticks, illegal prices, the next best price, levels that change side
+│   ├── moved_book_test.cpp     # a book that has been moved
+│   ├── random_test.cpp         # random runs against the reference book
 │   ├── pool_test.cpp           # the pool: reuse order, growth, address stability, move
 │   ├── order_queue_test.cpp    # the queue: push, pop, unlink at every position, relinking
 │   ├── order_table_test.cpp    # the table: lookup, page edges, page reuse, growth, move
-│   ├── bitmap_test.cpp         # the bitmap: search both ways, word edges, far gaps
+│   ├── bitmap_test.cpp         # the bitmap: search both ways, word and summary edges
 │   ├── side_index_test.cpp     # one side: best, next worse, move
-│   ├── ladder_test.cpp         # the ladder: prices and positions, totals, both sides, move
-│   ├── price_level_test.cpp    # the book's prices: edges, gaps, illegal prices, random runs against a reference
-│   └── moved_book_test.cpp     # a book that has been moved from
+│   └── ladder_test.cpp         # the ladder: prices and positions, totals, both sides, move
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark, orderbook_profile
     ├── workload.hpp / .cpp     # seeded synthetic order flow

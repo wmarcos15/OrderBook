@@ -11,42 +11,41 @@
 #include "ladder.hpp"
 #include "order.hpp"
 #include "order_queue.hpp"
+#include "queue_test_utils.hpp"
+#include "test_utils.hpp"
 #include "types.hpp"
 
 using namespace orderbook;
 using namespace orderbook::detail;
+using namespace orderbook::test;
 
-using Ids = std::vector<OrderID>;
 using Positions = std::vector<std::size_t>;
 
 constexpr std::size_t NONE = Ladder::NONE;
 
 constexpr OwnerID OWNER = 1;
 
+constexpr Price MAX = std::numeric_limits<Price>::max();
+constexpr Price MIN = std::numeric_limits<Price>::min();
+
 // Stops a walk that never ends, which a broken after would give
 constexpr std::size_t WALK_LIMIT = 1'000;
 
-template<Side side>
-constexpr Side otherSide = (side == Side::buy) ? Side::sell : Side::buy;
-
-static Ids forwardIds(const OrderQueue& queue) {
-    Ids ids;
-    for (const OrderNode* node = queue.head; node != nullptr; node = node->next)
-        ids.push_back(node->order.getID());
-    return ids;
+static bool containsAt(const Ladder& ladder, Side side, std::size_t position) {
+    return (side == Side::buy) ? ladder.contains<Side::buy>(position) : ladder.contains<Side::sell>(position);
 }
 
-static Ids backwardIds(const OrderQueue& queue) {
-    Ids ids;
-    for (const OrderNode* node = queue.tail; node != nullptr; node = node->prev)
-        ids.push_back(node->order.getID());
-    return ids;
+static std::size_t bestAt(const Ladder& ladder, Side side) {
+    return (side == Side::buy) ? ladder.best<Side::buy>() : ladder.best<Side::sell>();
 }
 
-template<Side side>
-static Positions walk(const Ladder& ladder) {
+static std::size_t afterAt(const Ladder& ladder, Side side, std::size_t position) {
+    return (side == Side::buy) ? ladder.after<Side::buy>(position) : ladder.after<Side::sell>(position);
+}
+
+static Positions walk(const Ladder& ladder, Side side) {
     Positions found;
-    for (std::size_t position = ladder.best<side>(); position != NONE && found.size() < WALK_LIMIT; position = ladder.after<side>(position))
+    for (std::size_t position = bestAt(ladder, side); position != NONE && found.size() < WALK_LIMIT; position = afterAt(ladder, side, position))
         found.push_back(position);
     return found;
 }
@@ -55,17 +54,35 @@ static void place(Ladder& ladder, OrderNode* node) {
     ladder.add(ladder.positionOf(node->order.getPrice()), node);
 }
 
-// Default band is 1 to 100 with a tick of 1, so price p is at position p - 1
-class LadderTest : public ::testing::Test {
+// Every test runs once per side. The prices are written as the buys see them, and
+// the sells get them mirrored in the band. Price p is at position p - 1.
+class LadderTest : public ::testing::TestWithParam<Side> {
 protected:
+    Side side_ {GetParam()};
+    Side other_ {otherSide(side_)};
     Ladder ladder_ {1, 100, 1};
 
-    // Nodes never move, so the ladder's pointers to them stay valid
+    // A deque, so that the nodes never move
     std::deque<OrderNode> nodes_;
     OrderID nextID_ {1};
 
+    Price at(Price price) const {
+        return (side_ == Side::buy) ? price : 101 - price;
+    }
+
+    std::size_t positionAt(Price price) const {
+        return static_cast<std::size_t>(at(price) - 1);
+    }
+
+    Positions positionsAt(const std::vector<Price>& prices) const {
+        Positions positions;
+        for (Price price : prices)
+            positions.push_back(positionAt(price));
+        return positions;
+    }
+
     OrderNode* makeNode(Side side, Price price, Quantity quantity) {
-        nodes_.emplace_back(Order(nextID_++, OWNER, OrderType::GTC, side, price, quantity));
+        nodes_.emplace_back(Order(nextID_++, OWNER, OrderType::GTC, side, at(price), quantity));
         return &nodes_.back();
     }
 
@@ -76,1290 +93,475 @@ protected:
     }
 
     const Level& levelAt(Price price) const {
-        return ladder_.level(static_cast<std::size_t>(price - 1));
+        return ladder_.level(positionAt(price));
     }
 
-    template<Side side>
-    void checkFirstOrderQueueHoldsOnlyIt() {
-        OrderNode* node = addNode(side, 40, 100);
-
-        const Level& level = levelAt(40);
-        EXPECT_FALSE(level.queue.empty());
-        EXPECT_EQ(level.queue.head, node);
-        EXPECT_EQ(level.queue.tail, node);
-        EXPECT_EQ(node->prev, nullptr);
-        EXPECT_EQ(node->next, nullptr);
+    // In both directions, and every order points to its level
+    void expectLevel(const Ladder& ladder, Price price, const IDs& ids, Quantity quantity) const {
+        const Level& level = ladder.level(positionAt(price));
+        EXPECT_EQ(forwardIDs(level.queue), ids);
+        EXPECT_EQ(backwardIDs(level.queue), IDs(ids.rbegin(), ids.rend()));
+        EXPECT_EQ(level.data.qty_, quantity);
+        EXPECT_EQ(level.data.count_, ids.size());
+        for (const OrderNode* node = level.queue.head; node != nullptr; node = node->next) {
+            EXPECT_EQ(node->level, &level.queue);
+            EXPECT_EQ(node->levelData, &level.data);
+        }
     }
 
-    template<Side side>
-    void checkFirstOrderTotals() {
-        addNode(side, 40, 100);
-
-        EXPECT_EQ(levelAt(40).data.qty_, 100u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
+    void expectLevel(Price price, const IDs& ids, Quantity quantity) const {
+        expectLevel(ladder_, price, ids, quantity);
     }
 
-    template<Side side>
-    void checkFirstOrderPointersReferToItsLevel() {
-        OrderNode* node = addNode(side, 40, 100);
-
-        EXPECT_EQ(node->level, &levelAt(40).queue);
-        EXPECT_EQ(node->levelData, &levelAt(40).data);
+    void expectOnlySide(Side side, Price price) const {
+        EXPECT_TRUE(containsAt(ladder_, side, positionAt(price)));
+        EXPECT_FALSE(containsAt(ladder_, otherSide(side), positionAt(price)));
     }
 
-    template<Side side>
-    void checkFirstOrderMakesPriceContainedForItsSideOnly() {
-        addNode(side, 40, 100);
-
-        EXPECT_TRUE(ladder_.contains<side>(39));
-        EXPECT_FALSE(ladder_.contains<otherSide<side>>(39));
-        EXPECT_EQ(ladder_.best<side>(), 39u);
-        EXPECT_EQ(ladder_.best<otherSide<side>>(), NONE);
-    }
-
-    template<Side side>
-    void checkSecondOrderGoesToTheBack() {
-        OrderNode* first = addNode(side, 40, 100);
-        OrderNode* second = addNode(side, 40, 30);
-
-        const Level& level = levelAt(40);
-        EXPECT_EQ(level.queue.head, first);
-        EXPECT_EQ(level.queue.tail, second);
-        EXPECT_EQ(first->next, second);
-        EXPECT_EQ(second->prev, first);
-        EXPECT_EQ(second->next, nullptr);
-    }
-
-    template<Side side>
-    void checkSecondOrderTotalsAccumulate() {
-        addNode(side, 40, 100);
-        addNode(side, 40, 30);
-
-        EXPECT_EQ(levelAt(40).data.qty_, 130u);
-        EXPECT_EQ(levelAt(40).data.count_, 2u);
-    }
-
-    template<Side side>
-    void checkSecondOrderPointersReferToTheSameLevel() {
-        OrderNode* first = addNode(side, 40, 100);
-        OrderNode* second = addNode(side, 40, 30);
-
-        EXPECT_EQ(second->level, first->level);
-        EXPECT_EQ(second->levelData, first->levelData);
-        EXPECT_EQ(second->level, &levelAt(40).queue);
-        EXPECT_EQ(second->levelData, &levelAt(40).data);
-    }
-
-    template<Side side>
-    void checkQueueOrderIsArrivalOrder() {
-        Ids arrival;
-        for (Quantity quantity {1}; quantity <= 5; ++quantity)
-            arrival.push_back(addNode(side, 40, quantity * 10)->order.getID());
-
-        Ids reversed(arrival.rbegin(), arrival.rend());
-        EXPECT_EQ(forwardIds(levelAt(40).queue), arrival);
-        EXPECT_EQ(backwardIds(levelAt(40).queue), reversed);
-    }
-
-    template<Side side>
-    void checkPartiallyFilledOrderTotalsUseRemaining() {
-        OrderNode* node = makeNode(side, 40, 100);
-        node->order.fill(30);
-
-        place(ladder_, node);
-
-        EXPECT_EQ(levelAt(40).data.qty_, 70u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
-    }
-
-    template<Side side>
-    void checkOrdersAtFirstAndLastPrice() {
-        OrderNode* first = addNode(side, 1, 10);
-        OrderNode* last = addNode(side, 100, 20);
-
-        EXPECT_EQ(ladder_.level(0).queue.head, first);
-        EXPECT_EQ(ladder_.level(99).queue.head, last);
-        EXPECT_EQ(first->level, &ladder_.level(0).queue);
-        EXPECT_EQ(last->levelData, &ladder_.level(99).data);
-        EXPECT_TRUE(ladder_.contains<side>(0));
-        EXPECT_TRUE(ladder_.contains<side>(99));
-    }
-
-    template<Side side>
-    void checkFillPartially() {
-        OrderNode* node = addNode(side, 40, 100);
-
-        ladder_.fill(node, 30);
-
-        EXPECT_EQ(levelAt(40).data.qty_, 70u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
-        EXPECT_EQ(node->order.getRemainingQuantity(), 70u);
-        EXPECT_EQ(levelAt(40).queue.head, node);
-    }
-
-    template<Side side>
-    void checkFillFullyKeepsTheNode() {
-        OrderNode* node = addNode(side, 40, 100);
-
-        ladder_.fill(node, 100);
-
-        EXPECT_TRUE(node->order.isFilled());
-        EXPECT_EQ(levelAt(40).data.qty_, 0u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
-        EXPECT_EQ(levelAt(40).queue.head, node);
-        EXPECT_EQ(levelAt(40).queue.tail, node);
-        EXPECT_TRUE(ladder_.contains<side>(39));
-    }
-
-    template<Side side>
-    void checkFillSeveralTimes() {
-        OrderNode* node = addNode(side, 40, 100);
-
-        ladder_.fill(node, 30);
-        ladder_.fill(node, 30);
-        ladder_.fill(node, 25);
-
-        EXPECT_EQ(node->order.getRemainingQuantity(), 15u);
-        EXPECT_EQ(levelAt(40).data.qty_, 15u);
-    }
-
-    template<Side side>
-    void checkFillOneOfTwoLeavesTheOtherUntouched() {
-        OrderNode* first = addNode(side, 40, 100);
-        OrderNode* second = addNode(side, 40, 60);
-
-        ladder_.fill(second, 25);
-
-        EXPECT_EQ(first->order.getRemainingQuantity(), 100u);
-        EXPECT_EQ(second->order.getRemainingQuantity(), 35u);
-        EXPECT_EQ(levelAt(40).data.qty_, 135u);
-        EXPECT_EQ(levelAt(40).data.count_, 2u);
-    }
-
-    template<Side side>
-    void checkFillDoesNotTouchOtherPrices() {
-        OrderNode* node = addNode(side, 40, 100);
-        addNode(side, 41, 50);
-
-        ladder_.fill(node, 100);
-
-        EXPECT_EQ(levelAt(41).data.qty_, 50u);
-        EXPECT_EQ(levelAt(41).data.count_, 1u);
-    }
-
-    template<Side side>
-    void checkRemoveFront() {
-        OrderNode* first = addNode(side, 40, 10);
-        OrderNode* second = addNode(side, 40, 20);
-        OrderNode* third = addNode(side, 40, 30);
-
-        ladder_.remove(first);
-
-        EXPECT_EQ(levelAt(40).queue.head, second);
-        EXPECT_EQ(levelAt(40).queue.tail, third);
-        EXPECT_EQ(second->prev, nullptr);
-        EXPECT_EQ(levelAt(40).data.qty_, 50u);
-        EXPECT_EQ(levelAt(40).data.count_, 2u);
-    }
-
-    template<Side side>
-    void checkRemoveMiddle() {
-        OrderNode* first = addNode(side, 40, 10);
-        OrderNode* second = addNode(side, 40, 20);
-        OrderNode* third = addNode(side, 40, 30);
-
-        ladder_.remove(second);
-
-        EXPECT_EQ(levelAt(40).queue.head, first);
-        EXPECT_EQ(levelAt(40).queue.tail, third);
-        EXPECT_EQ(first->next, third);
-        EXPECT_EQ(third->prev, first);
-        EXPECT_EQ(levelAt(40).data.qty_, 40u);
-        EXPECT_EQ(levelAt(40).data.count_, 2u);
-    }
-
-    template<Side side>
-    void checkRemoveBack() {
-        OrderNode* first = addNode(side, 40, 10);
-        OrderNode* second = addNode(side, 40, 20);
-        OrderNode* third = addNode(side, 40, 30);
-
-        ladder_.remove(third);
-
-        EXPECT_EQ(levelAt(40).queue.head, first);
-        EXPECT_EQ(levelAt(40).queue.tail, second);
-        EXPECT_EQ(second->next, nullptr);
-        EXPECT_EQ(levelAt(40).data.qty_, 30u);
-        EXPECT_EQ(levelAt(40).data.count_, 2u);
-    }
-
-    template<Side side>
-    void checkRemoveLeavesTheNodeUnlinked() {
-        addNode(side, 40, 10);
-        OrderNode* second = addNode(side, 40, 20);
-        addNode(side, 40, 30);
-
-        ladder_.remove(second);
-
-        EXPECT_EQ(second->prev, nullptr);
-        EXPECT_EQ(second->next, nullptr);
-    }
-
-    template<Side side>
-    void checkRemoveOnlyOrderEmptiesThePrice() {
-        OrderNode* node = addNode(side, 40, 100);
-
-        ladder_.remove(node);
-
-        EXPECT_TRUE(levelAt(40).queue.empty());
-        EXPECT_EQ(levelAt(40).data.qty_, 0u);
-        EXPECT_EQ(levelAt(40).data.count_, 0u);
-        EXPECT_FALSE(ladder_.contains<side>(39));
-        EXPECT_EQ(ladder_.best<side>(), NONE);
-    }
-
-    template<Side side>
-    void checkRemoveOneOfTwoKeepsThePriceContained() {
-        OrderNode* first = addNode(side, 40, 10);
-        addNode(side, 40, 20);
-
-        ladder_.remove(first);
-
-        EXPECT_TRUE(ladder_.contains<side>(39));
-        EXPECT_EQ(ladder_.best<side>(), 39u);
-    }
-
-    template<Side side>
-    void checkRemovePartiallyFilledTakesOffTheRemaining() {
-        OrderNode* first = addNode(side, 40, 100);
-        addNode(side, 40, 50);
-        ladder_.fill(first, 30);
-
-        ladder_.remove(first);
-
-        EXPECT_EQ(levelAt(40).data.qty_, 50u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
-    }
-
-    template<Side side>
-    void checkRemoveFullyFilledTakesOffNothing() {
-        OrderNode* first = addNode(side, 40, 100);
-        addNode(side, 40, 50);
-        ladder_.fill(first, 100);
-
-        ladder_.remove(first);
-
-        EXPECT_EQ(levelAt(40).data.qty_, 50u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
-    }
-
-    template<Side side>
-    void checkRemoveFullyFilledOnlyOrderEmptiesThePrice() {
-        OrderNode* node = addNode(side, 40, 100);
-        ladder_.fill(node, 100);
-
-        ladder_.remove(node);
-
-        EXPECT_TRUE(levelAt(40).queue.empty());
-        EXPECT_EQ(levelAt(40).data.count_, 0u);
-        EXPECT_FALSE(ladder_.contains<side>(39));
-    }
-
-    template<Side side>
-    void checkPriceEmptiedThenUsedByTheOtherSide() {
-        OrderNode* old = addNode(side, 40, 100);
-        ladder_.remove(old);
-
-        OrderNode* fresh = addNode(otherSide<side>, 40, 70);
-
-        EXPECT_TRUE(ladder_.contains<otherSide<side>>(39));
-        EXPECT_FALSE(ladder_.contains<side>(39));
-        EXPECT_EQ(ladder_.best<otherSide<side>>(), 39u);
-        EXPECT_EQ(ladder_.best<side>(), NONE);
-        EXPECT_EQ(levelAt(40).queue.head, fresh);
-        EXPECT_EQ(levelAt(40).queue.tail, fresh);
-        EXPECT_EQ(levelAt(40).data.qty_, 70u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
-    }
-
-    template<Side side>
-    void checkPriceEmptiedThenUsedAgainBySameSide() {
-        OrderNode* old = addNode(side, 40, 100);
-        ladder_.remove(old);
-
-        OrderNode* fresh = addNode(side, 40, 70);
-
-        EXPECT_TRUE(ladder_.contains<side>(39));
-        EXPECT_EQ(levelAt(40).queue.head, fresh);
-        EXPECT_EQ(levelAt(40).data.qty_, 70u);
-        EXPECT_EQ(levelAt(40).data.count_, 1u);
+    void expectNeitherSide(Price price) const {
+        EXPECT_FALSE(containsAt(ladder_, side_, positionAt(price)));
+        EXPECT_FALSE(containsAt(ladder_, other_, positionAt(price)));
     }
 };
+
+INSTANTIATE_FOR_BOTH_SIDES(LadderTest);
 
 // --------------------------
 // Price and position
 // --------------------------
-TEST(LadderTranslationTest, TickOfOne_FirstPrice_IsPositionZero) {
-    Ladder ladder(1, 100, 1);
-
-    EXPECT_EQ(ladder.positionOf(1), 0u);
-    EXPECT_EQ(ladder.priceOf(0), 1);
-}
-
-TEST(LadderTranslationTest, TickOfOne_LastPrice_IsLastPosition) {
-    Ladder ladder(1, 100, 1);
-
-    EXPECT_EQ(ladder.positionOf(100), 99u);
-    EXPECT_EQ(ladder.priceOf(99), 100);
-}
-
-TEST(LadderTranslationTest, TickOfOne_MinPriceAboveOne_PositionsStartAtMin) {
-    Ladder ladder(50, 60, 1);
-
-    EXPECT_EQ(ladder.positionOf(50), 0u);
-    EXPECT_EQ(ladder.positionOf(55), 5u);
-    EXPECT_EQ(ladder.positionOf(60), 10u);
-}
-
-TEST(LadderTranslationTest, TickOfOne_EveryPrice_RoundTrips) {
-    Ladder ladder(1, 1'000, 1);
-
-    for (Price price {1}; price <= 1'000; ++price) {
-        std::size_t position = ladder.positionOf(price);
-        ASSERT_EQ(position, static_cast<std::size_t>(price - 1)) << "price " << price;
-        ASSERT_EQ(ladder.priceOf(position), price) << "price " << price;
+static void expectRoundTrip(const Ladder& ladder, Price minPrice, Price tick, std::size_t levels) {
+    for (std::size_t position {0}; position < levels; ++position) {
+        Price price = minPrice + static_cast<Price>(position) * tick;
+        ASSERT_EQ(ladder.priceOf(position), price);
+        ASSERT_EQ(ladder.positionOf(price), position);
     }
 }
 
-TEST(LadderTranslationTest, TickOfFive_FirstAndLastPrice_AreTheEndPositions) {
-    Ladder ladder(10, 500, 5);
-
-    EXPECT_EQ(ladder.positionOf(10), 0u);
-    EXPECT_EQ(ladder.positionOf(500), 98u);
-    EXPECT_EQ(ladder.priceOf(0), 10);
-    EXPECT_EQ(ladder.priceOf(98), 500);
-}
-
-TEST(LadderTranslationTest, TickOfFive_NextPrice_IsNextPosition) {
-    Ladder ladder(10, 500, 5);
-
-    EXPECT_EQ(ladder.positionOf(15), 1u);
-    EXPECT_EQ(ladder.positionOf(20), 2u);
-    EXPECT_EQ(ladder.priceOf(1), 15);
-}
-
-TEST(LadderTranslationTest, TickOfFive_EveryPrice_RoundTrips) {
-    Ladder ladder(10, 500, 5);
-
-    std::size_t expected {0};
-    for (Price price {10}; price <= 500; price += 5) {
-        std::size_t position = ladder.positionOf(price);
-        ASSERT_EQ(position, expected) << "price " << price;
-        ASSERT_EQ(ladder.priceOf(position), price) << "price " << price;
-        ++expected;
-    }
-}
-
-TEST(LadderTranslationTest, MinPriceEqualsTick_FirstPriceIsPositionZero) {
-    Ladder ladder(5, 50, 5);
-
-    EXPECT_EQ(ladder.positionOf(5), 0u);
-    EXPECT_EQ(ladder.positionOf(50), 9u);
-}
-
-TEST(LadderTranslationTest, OnePriceBand_TheOnlyPrice_IsPositionZero) {
-    Ladder ladder(7, 7, 1);
-
-    EXPECT_EQ(ladder.positionOf(7), 0u);
-    EXPECT_EQ(ladder.priceOf(0), 7);
-}
-
-TEST(LadderTranslationTest, OnePriceBand_NeighbourPrices_AreNone) {
-    Ladder ladder(7, 7, 1);
-
-    EXPECT_EQ(ladder.positionOf(6), NONE);
-    EXPECT_EQ(ladder.positionOf(8), NONE);
-}
-
-TEST(LadderTranslationTest, OnePriceBandWithTick_OtherPrices_AreNone) {
-    Ladder ladder(10, 10, 5);
-
-    EXPECT_EQ(ladder.positionOf(10), 0u);
-    EXPECT_EQ(ladder.positionOf(5), NONE);
-    EXPECT_EQ(ladder.positionOf(15), NONE);
-    EXPECT_EQ(ladder.positionOf(11), NONE);
-}
-
-TEST(LadderTranslationTest, PositionOf_PriceBelowMin_ReturnsNone) {
-    Ladder ladder(10, 50, 5);
-
-    EXPECT_EQ(ladder.positionOf(9), NONE);
-    EXPECT_EQ(ladder.positionOf(5), NONE);
-    EXPECT_EQ(ladder.positionOf(1), NONE);
-}
-
-TEST(LadderTranslationTest, PositionOf_PriceBelowMinOnTheTick_ReturnsNone) {
-    Ladder ladder(10, 50, 5);
-
-    EXPECT_EQ(ladder.positionOf(5), NONE);
-    EXPECT_EQ(ladder.positionOf(0), NONE);
-}
-
-TEST(LadderTranslationTest, PositionOf_PriceAboveMax_ReturnsNone) {
-    Ladder ladder(10, 50, 5);
-
-    EXPECT_EQ(ladder.positionOf(51), NONE);
-    EXPECT_EQ(ladder.positionOf(55), NONE);
-    EXPECT_EQ(ladder.positionOf(1'000), NONE);
-}
-
-TEST(LadderTranslationTest, PositionOf_PriceOffTickInsideTheBand_ReturnsNone) {
-    Ladder ladder(10, 50, 5);
-
-    for (Price price {11}; price < 50; ++price) {
-        if (price % 5 == 0) continue;
+static void expectNone(const Ladder& ladder, const std::vector<Price>& prices) {
+    for (Price price : prices)
         EXPECT_EQ(ladder.positionOf(price), NONE) << "price " << price;
+}
+
+TEST(LadderTranslationTest, LegalPrices_EachHasItsPosition) {
+    expectRoundTrip(Ladder(1, 1'000, 1), 1, 1, 1'000);
+    expectRoundTrip(Ladder(50, 60, 1), 50, 1, 11);      // band not starting at 1
+    expectRoundTrip(Ladder(10, 500, 5), 10, 5, 99);
+    expectRoundTrip(Ladder(5, 50, 5), 5, 5, 10);        // band starting at the tick
+    expectRoundTrip(Ladder(7, 7, 1), 7, 1, 1);
+    expectRoundTrip(Ladder(10, 10, 5), 10, 5, 1);
+    expectRoundTrip(Ladder(1'000'000'000, 2'000'000'000, 1'000'000'000), 1'000'000'000, 1'000'000'000, 2);
+    expectRoundTrip(Ladder(MAX - 47, MAX, 1), MAX - 47, 1, 48);
+    expectRoundTrip(Ladder(2'147'480'000, 2'147'483'000, 1'000), 2'147'480'000, 1'000, 4);
+}
+
+TEST(LadderTranslationTest, PricesOutsideTheBand_AreNone) {
+    expectNone(Ladder(1, 100, 1), {0, -1, 101});
+    expectNone(Ladder(10, 50, 5), {9, 5, 1, 0, -5, -10, 51, 55, 1'000, MAX, MAX - 1, MIN, MIN + 1});
+    expectNone(Ladder(7, 7, 1), {6, 8});
+    expectNone(Ladder(10, 10, 5), {5, 11, 15});
+    expectNone(Ladder(1'000'000'000, 2'000'000'000, 1'000'000'000), {0, 999'999'999, 2'000'000'001, MAX, MIN});
+    expectNone(Ladder(MAX - 47, MAX, 1), {MAX - 48, 0, -1, MIN});
+    expectNone(Ladder(2'147'480'000, 2'147'483'000, 1'000), {2'147'479'000, 1'000, 2'147'483'001, MAX, MIN});
+}
+
+TEST(LadderTranslationTest, PricesOffTheTick_AreNone) {
+    Ladder ladder(10, 50, 5);
+    for (Price price {11}; price < 50; ++price)
+        EXPECT_EQ(ladder.positionOf(price) == NONE, price % 5 != 0) << "price " << price;
+
+    expectNone(Ladder(1'000'000'000, 2'000'000'000, 1'000'000'000), {1'500'000'000});
+}
+
+// --------------------------
+// New ladder
+// --------------------------
+TEST_P(LadderTest, NewLadder_EveryPriceIsEmpty) {
+    EXPECT_EQ(bestAt(ladder_, side_), NONE);
+    for (Price price {1}; price <= 100; ++price) {
+        EXPECT_TRUE(levelAt(price).queue.empty()) << "price " << price;
+        expectLevel(price, {}, 0);
+        expectNeitherSide(price);
     }
-}
-
-TEST(LadderTranslationTest, PositionOf_Zero_ReturnsNone) {
-    Ladder ladder(1, 100, 1);
-
-    EXPECT_EQ(ladder.positionOf(0), NONE);
-}
-
-TEST(LadderTranslationTest, PositionOf_NegativePrices_ReturnNone) {
-    Ladder ladder(5, 50, 5);
-
-    EXPECT_EQ(ladder.positionOf(-1), NONE);
-    EXPECT_EQ(ladder.positionOf(-5), NONE);
-    EXPECT_EQ(ladder.positionOf(-10), NONE);
-}
-
-TEST(LadderTranslationTest, PositionOf_NumericLimits_ReturnNone) {
-    Ladder ladder(5, 50, 5);
-
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::max()), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::max() - 1), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::min()), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::min() + 1), NONE);
-}
-
-TEST(LadderTranslationTest, WideTick_OnlyTheTicksAreLegal) {
-    Ladder ladder(1'000'000'000, 2'000'000'000, 1'000'000'000);
-
-    EXPECT_EQ(ladder.positionOf(1'000'000'000), 0u);
-    EXPECT_EQ(ladder.positionOf(2'000'000'000), 1u);
-    EXPECT_EQ(ladder.priceOf(1), 2'000'000'000);
-}
-
-TEST(LadderTranslationTest, WideTick_IllegalPricesIncludingTheLargestPrice_ReturnNone) {
-    Ladder ladder(1'000'000'000, 2'000'000'000, 1'000'000'000);
-
-    EXPECT_EQ(ladder.positionOf(0), NONE);
-    EXPECT_EQ(ladder.positionOf(1'500'000'000), NONE);
-    EXPECT_EQ(ladder.positionOf(999'999'999), NONE);
-    EXPECT_EQ(ladder.positionOf(2'000'000'001), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::max()), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::min()), NONE);
-}
-
-TEST(LadderTranslationTest, BandReachingTheLargestPrice_LastPriceIsLegal) {
-    constexpr Price MAX = std::numeric_limits<Price>::max();
-    Ladder ladder(MAX - 47, MAX, 1);
-
-    EXPECT_EQ(ladder.positionOf(MAX), 47u);
-    EXPECT_EQ(ladder.positionOf(MAX - 47), 0u);
-    EXPECT_EQ(ladder.priceOf(47), MAX);
-    EXPECT_EQ(ladder.priceOf(0), MAX - 47);
-}
-
-TEST(LadderTranslationTest, BandReachingTheLargestPrice_EveryPriceRoundTrips) {
-    constexpr Price MAX = std::numeric_limits<Price>::max();
-    Ladder ladder(MAX - 47, MAX, 1);
-
-    for (std::size_t position {0}; position < 48; ++position) {
-        Price price = ladder.priceOf(position);
-        ASSERT_EQ(price, MAX - 47 + static_cast<Price>(position)) << "position " << position;
-        ASSERT_EQ(ladder.positionOf(price), position) << "position " << position;
-    }
-}
-
-TEST(LadderTranslationTest, BandReachingTheLargestPrice_PriceBelowMin_ReturnsNone) {
-    constexpr Price MAX = std::numeric_limits<Price>::max();
-    Ladder ladder(MAX - 47, MAX, 1);
-
-    EXPECT_EQ(ladder.positionOf(MAX - 48), NONE);
-    EXPECT_EQ(ladder.positionOf(0), NONE);
-    EXPECT_EQ(ladder.positionOf(-1), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::min()), NONE);
-}
-
-TEST(LadderTranslationTest, BandNearTheLargestPrice_PriceAboveMax_ReturnsNone) {
-    Ladder ladder(2'147'480'000, 2'147'483'000, 1'000);
-
-    EXPECT_EQ(ladder.positionOf(2'147'483'000), 3u);
-    EXPECT_EQ(ladder.positionOf(2'147'483'001), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::max()), NONE);
-}
-
-TEST(LadderTranslationTest, BandNearTheLargestPrice_PriceBelowMin_ReturnsNone) {
-    Ladder ladder(2'147'480'000, 2'147'483'000, 1'000);
-
-    EXPECT_EQ(ladder.positionOf(2'147'479'000), NONE);
-    EXPECT_EQ(ladder.positionOf(1'000), NONE);
-    EXPECT_EQ(ladder.positionOf(std::numeric_limits<Price>::min()), NONE);
 }
 
 // --------------------------
 // Add
 // --------------------------
-TEST_F(LadderTest, AddBuy_FirstOrder_QueueHoldsOnlyIt) {
-    checkFirstOrderQueueHoldsOnlyIt<Side::buy>();
+TEST_P(LadderTest, Add_FirstOrder_LevelHoldsOnlyIt) {
+    OrderNode* node = addNode(side_, 40, 100);
+
+    EXPECT_FALSE(levelAt(40).queue.empty());
+    EXPECT_EQ(levelAt(40).queue.head, node);
+    EXPECT_EQ(levelAt(40).queue.tail, node);
+    expectLevel(40, {1}, 100);
+    expectOnlySide(side_, 40);
+    EXPECT_EQ(bestAt(ladder_, side_), positionAt(40));
+    EXPECT_EQ(bestAt(ladder_, other_), NONE);
 }
 
-TEST_F(LadderTest, AddSell_FirstOrder_QueueHoldsOnlyIt) {
-    checkFirstOrderQueueHoldsOnlyIt<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_FirstOrder_TotalsAreItsQuantityAndOne) {
-    checkFirstOrderTotals<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_FirstOrder_TotalsAreItsQuantityAndOne) {
-    checkFirstOrderTotals<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_FirstOrder_NodePointersReferToTheLevel) {
-    checkFirstOrderPointersReferToItsLevel<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_FirstOrder_NodePointersReferToTheLevel) {
-    checkFirstOrderPointersReferToItsLevel<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_FirstOrder_PriceIsContainedForBuysOnly) {
-    checkFirstOrderMakesPriceContainedForItsSideOnly<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_FirstOrder_PriceIsContainedForSellsOnly) {
-    checkFirstOrderMakesPriceContainedForItsSideOnly<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_SecondOrderSamePrice_GoesToTheBack) {
-    checkSecondOrderGoesToTheBack<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_SecondOrderSamePrice_GoesToTheBack) {
-    checkSecondOrderGoesToTheBack<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_SecondOrderSamePrice_TotalsAccumulate) {
-    checkSecondOrderTotalsAccumulate<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_SecondOrderSamePrice_TotalsAccumulate) {
-    checkSecondOrderTotalsAccumulate<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_SecondOrderSamePrice_PointersReferToTheSameLevel) {
-    checkSecondOrderPointersReferToTheSameLevel<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_SecondOrderSamePrice_PointersReferToTheSameLevel) {
-    checkSecondOrderPointersReferToTheSameLevel<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_FiveOrdersSamePrice_QueueOrderIsArrivalOrder) {
-    checkQueueOrderIsArrivalOrder<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_FiveOrdersSamePrice_QueueOrderIsArrivalOrder) {
-    checkQueueOrderIsArrivalOrder<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_PartiallyFilledOrder_TotalsUseRemainingQuantity) {
-    checkPartiallyFilledOrderTotalsUseRemaining<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_PartiallyFilledOrder_TotalsUseRemainingQuantity) {
-    checkPartiallyFilledOrderTotalsUseRemaining<Side::sell>();
-}
-
-TEST_F(LadderTest, AddBuy_FirstAndLastPriceOfTheBand_LandInTheEndLevels) {
-    checkOrdersAtFirstAndLastPrice<Side::buy>();
-}
-
-TEST_F(LadderTest, AddSell_FirstAndLastPriceOfTheBand_LandInTheEndLevels) {
-    checkOrdersAtFirstAndLastPrice<Side::sell>();
-}
-
-TEST_F(LadderTest, Add_BuyAndSellAtDifferentPrices_LevelsAreIndependent) {
-    OrderNode* buy = addNode(Side::buy, 40, 100);
-    OrderNode* sell = addNode(Side::sell, 60, 70);
-
-    EXPECT_EQ(levelAt(40).queue.head, buy);
-    EXPECT_EQ(levelAt(40).data.qty_, 100u);
-    EXPECT_EQ(levelAt(60).queue.head, sell);
-    EXPECT_EQ(levelAt(60).data.qty_, 70u);
-    EXPECT_EQ(buy->level, &levelAt(40).queue);
-    EXPECT_EQ(sell->level, &levelAt(60).queue);
-}
-
-TEST_F(LadderTest, Add_BuyAndSellAtDifferentPrices_EachPriceIsContainedForItsOwnSide) {
-    addNode(Side::buy, 40, 100);
-    addNode(Side::sell, 60, 70);
-
-    EXPECT_TRUE(ladder_.contains<Side::buy>(39));
-    EXPECT_FALSE(ladder_.contains<Side::sell>(39));
-    EXPECT_TRUE(ladder_.contains<Side::sell>(59));
-    EXPECT_FALSE(ladder_.contains<Side::buy>(59));
-}
-
-TEST_F(LadderTest, Add_Order_NeighbouringPricesStayEmpty) {
-    addNode(Side::buy, 40, 100);
+TEST_P(LadderTest, Add_FirstOrder_NeighboursStayEmpty) {
+    addNode(side_, 40, 100);
 
     for (Price price : {39, 41}) {
-        EXPECT_TRUE(levelAt(price).queue.empty()) << "price " << price;
-        EXPECT_EQ(levelAt(price).data.qty_, 0u) << "price " << price;
-        EXPECT_EQ(levelAt(price).data.count_, 0u) << "price " << price;
+        expectLevel(price, {}, 0);
+        expectNeitherSide(price);
     }
 }
 
-TEST_F(LadderTest, Add_OrdersAtTwoPrices_NodePointersAreDistinct) {
-    OrderNode* low = addNode(Side::buy, 40, 100);
-    OrderNode* high = addNode(Side::buy, 41, 100);
+TEST_P(LadderTest, Add_SeveralAtOnePrice_QueuedByArrival) {
+    for (Quantity quantity : {10, 20, 30, 40, 50})
+        addNode(side_, 40, quantity);
 
-    EXPECT_NE(low->level, high->level);
-    EXPECT_NE(low->levelData, high->levelData);
+    expectLevel(40, {1, 2, 3, 4, 5}, 150);
+    EXPECT_EQ(walk(ladder_, side_), positionsAt({40}));
 }
 
-TEST_F(LadderTest, Level_EmptyPrice_QueueIsEmptyAndTotalsAreZero) {
-    const Level& level = levelAt(40);
+TEST_P(LadderTest, Add_PartiallyFilledOrder_TotalUsesWhatIsLeft) {
+    OrderNode* node = makeNode(side_, 40, 100);
+    node->order.fill(30);
 
-    EXPECT_TRUE(level.queue.empty());
-    EXPECT_EQ(level.queue.head, nullptr);
-    EXPECT_EQ(level.queue.tail, nullptr);
-    EXPECT_EQ(level.data.qty_, 0u);
-    EXPECT_EQ(level.data.count_, 0u);
+    place(ladder_, node);
+
+    expectLevel(40, {1}, 70);
 }
 
-TEST_F(LadderTest, Level_EveryPriceOfTheBand_StartsEmpty) {
-    for (std::size_t position {0}; position < 100; ++position) {
-        EXPECT_TRUE(ladder_.level(position).queue.empty()) << "position " << position;
-        EXPECT_EQ(ladder_.level(position).data.count_, 0u) << "position " << position;
-    }
+TEST_P(LadderTest, Add_FirstAndLastPrice_LandInTheEndLevels) {
+    addNode(side_, 1, 10);
+    addNode(side_, 100, 20);
+
+    expectLevel(1, {1}, 10);
+    expectLevel(100, {2}, 20);
+    EXPECT_EQ(walk(ladder_, side_), positionsAt({100, 1}));
+}
+
+TEST_P(LadderTest, Add_OneOrderOnEachSide_LevelsAndSidesAreIndependent) {
+    addNode(side_, 40, 100);
+    addNode(other_, 60, 70);
+
+    expectLevel(40, {1}, 100);
+    expectLevel(60, {2}, 70);
+    expectOnlySide(side_, 40);
+    expectOnlySide(other_, 60);
+    EXPECT_EQ(bestAt(ladder_, side_), positionAt(40));
+    EXPECT_EQ(bestAt(ladder_, other_), positionAt(60));
 }
 
 // --------------------------
 // Fill
 // --------------------------
-TEST_F(LadderTest, FillBuy_Partially_QuantityDropsAndCountStays) {
-    checkFillPartially<Side::buy>();
+TEST_P(LadderTest, Fill_SeveralTimes_EachComesOffTheLevel) {
+    OrderNode* node = addNode(side_, 40, 100);
+
+    ladder_.fill(node, 30);
+    expectLevel(40, {1}, 70);
+    EXPECT_EQ(node->order.getRemainingQuantity(), 70u);
+
+    ladder_.fill(node, 55);
+    expectLevel(40, {1}, 15);
+    EXPECT_EQ(node->order.getRemainingQuantity(), 15u);
 }
 
-TEST_F(LadderTest, FillSell_Partially_QuantityDropsAndCountStays) {
-    checkFillPartially<Side::sell>();
+TEST_P(LadderTest, Fill_Fully_OrderStaysUntilItIsRemoved) {
+    OrderNode* node = addNode(side_, 40, 100);
+    addNode(side_, 30, 10);
+
+    ladder_.fill(node, 100);
+
+    EXPECT_TRUE(node->order.isFilled());
+    expectLevel(40, {1}, 0);
+    expectOnlySide(side_, 40);
+    EXPECT_EQ(bestAt(ladder_, side_), positionAt(40));
 }
 
-TEST_F(LadderTest, FillBuy_Fully_NodeStaysInTheQueue) {
-    checkFillFullyKeepsTheNode<Side::buy>();
+TEST_P(LadderTest, Fill_OneOfTwo_OtherOrderAndPricesUntouched) {
+    OrderNode* first = addNode(side_, 40, 100);
+    OrderNode* second = addNode(side_, 40, 60);
+    addNode(side_, 41, 50);
+
+    ladder_.fill(second, 25);
+
+    EXPECT_EQ(first->order.getRemainingQuantity(), 100u);
+    EXPECT_EQ(second->order.getRemainingQuantity(), 35u);
+    expectLevel(40, {1, 2}, 135);
+    expectLevel(41, {3}, 50);
 }
 
-TEST_F(LadderTest, FillSell_Fully_NodeStaysInTheQueue) {
-    checkFillFullyKeepsTheNode<Side::sell>();
-}
-
-TEST_F(LadderTest, FillBuy_SeveralTimes_TakesEachOffTheLevel) {
-    checkFillSeveralTimes<Side::buy>();
-}
-
-TEST_F(LadderTest, FillSell_SeveralTimes_TakesEachOffTheLevel) {
-    checkFillSeveralTimes<Side::sell>();
-}
-
-TEST_F(LadderTest, FillBuy_OneOfTwoOrders_OtherUntouched) {
-    checkFillOneOfTwoLeavesTheOtherUntouched<Side::buy>();
-}
-
-TEST_F(LadderTest, FillSell_OneOfTwoOrders_OtherUntouched) {
-    checkFillOneOfTwoLeavesTheOtherUntouched<Side::sell>();
-}
-
-TEST_F(LadderTest, FillBuy_Fully_OtherPricesUntouched) {
-    checkFillDoesNotTouchOtherPrices<Side::buy>();
-}
-
-TEST_F(LadderTest, FillSell_Fully_OtherPricesUntouched) {
-    checkFillDoesNotTouchOtherPrices<Side::sell>();
-}
-
-TEST_F(LadderTest, Fill_PartiallyFilledBeforeAdd_TakesOffTheRemaining) {
-    OrderNode* node = makeNode(Side::buy, 40, 100);
+TEST_P(LadderTest, Fill_OrderPartiallyFilledBeforeItWasAdded_LevelReachesZero) {
+    OrderNode* node = makeNode(side_, 40, 100);
     node->order.fill(30);
     place(ladder_, node);
 
     ladder_.fill(node, 70);
 
-    EXPECT_EQ(levelAt(40).data.qty_, 0u);
     EXPECT_TRUE(node->order.isFilled());
+    expectLevel(40, {1}, 0);
 }
 
 // --------------------------
 // Remove
 // --------------------------
-TEST_F(LadderTest, RemoveBuy_FrontOfThree_SecondBecomesHead) {
-    checkRemoveFront<Side::buy>();
+TEST_P(LadderTest, Remove_EachOfThree_OthersKeepTheirOrder) {
+    for (std::size_t removed {0}; removed < 3; ++removed) {
+        std::vector<OrderNode*> nodes;
+        IDs left;
+        for (Quantity quantity : {10, 20, 30}) {
+            nodes.push_back(addNode(side_, 40, quantity));
+            left.push_back(nodes.back()->order.getID());
+        }
+
+        ladder_.remove(nodes[removed]);
+
+        left.erase(left.begin() + static_cast<std::ptrdiff_t>(removed));
+        expectLevel(40, left, 60 - 10 * static_cast<Quantity>(removed + 1));
+        EXPECT_EQ(nodes[removed]->prev, nullptr);
+        EXPECT_EQ(nodes[removed]->next, nullptr);
+        expectOnlySide(side_, 40);
+        EXPECT_EQ(bestAt(ladder_, side_), positionAt(40));
+
+        nodes.erase(nodes.begin() + static_cast<std::ptrdiff_t>(removed));
+        for (OrderNode* node : nodes)
+            ladder_.remove(node);
+    }
 }
 
-TEST_F(LadderTest, RemoveSell_FrontOfThree_SecondBecomesHead) {
-    checkRemoveFront<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_MiddleOfThree_NeighboursLinkUp) {
-    checkRemoveMiddle<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_MiddleOfThree_NeighboursLinkUp) {
-    checkRemoveMiddle<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_BackOfThree_SecondBecomesTail) {
-    checkRemoveBack<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_BackOfThree_SecondBecomesTail) {
-    checkRemoveBack<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_MiddleOfThree_NodeHasNoLinksLeft) {
-    checkRemoveLeavesTheNodeUnlinked<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_MiddleOfThree_NodeHasNoLinksLeft) {
-    checkRemoveLeavesTheNodeUnlinked<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_OnlyOrder_PriceIsEmptyAndNotContained) {
-    checkRemoveOnlyOrderEmptiesThePrice<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_OnlyOrder_PriceIsEmptyAndNotContained) {
-    checkRemoveOnlyOrderEmptiesThePrice<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_OneOfTwo_PriceStaysContained) {
-    checkRemoveOneOfTwoKeepsThePriceContained<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_OneOfTwo_PriceStaysContained) {
-    checkRemoveOneOfTwoKeepsThePriceContained<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_PartiallyFilled_TakesOffOnlyTheRemaining) {
-    checkRemovePartiallyFilledTakesOffTheRemaining<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_PartiallyFilled_TakesOffOnlyTheRemaining) {
-    checkRemovePartiallyFilledTakesOffTheRemaining<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_FullyFilled_QuantityStaysAndCountDrops) {
-    checkRemoveFullyFilledTakesOffNothing<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_FullyFilled_QuantityStaysAndCountDrops) {
-    checkRemoveFullyFilledTakesOffNothing<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_FullyFilledOnlyOrder_PriceIsEmptyAndNotContained) {
-    checkRemoveFullyFilledOnlyOrderEmptiesThePrice<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_FullyFilledOnlyOrder_PriceIsEmptyAndNotContained) {
-    checkRemoveFullyFilledOnlyOrderEmptiesThePrice<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_OnlyOrder_SellsUseTheSamePriceAfterwards) {
-    checkPriceEmptiedThenUsedByTheOtherSide<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_OnlyOrder_BuysUseTheSamePriceAfterwards) {
-    checkPriceEmptiedThenUsedByTheOtherSide<Side::sell>();
-}
-
-TEST_F(LadderTest, RemoveBuy_OnlyOrder_BuysUseTheSamePriceAgain) {
-    checkPriceEmptiedThenUsedAgainBySameSide<Side::buy>();
-}
-
-TEST_F(LadderTest, RemoveSell_OnlyOrder_SellsUseTheSamePriceAgain) {
-    checkPriceEmptiedThenUsedAgainBySameSide<Side::sell>();
-}
-
-TEST_F(LadderTest, Remove_OrderAtOnePrice_OtherPricesAndSideUntouched) {
-    OrderNode* buy = addNode(Side::buy, 40, 100);
-    addNode(Side::buy, 41, 50);
-    addNode(Side::sell, 60, 70);
-
-    ladder_.remove(buy);
-
-    EXPECT_EQ(levelAt(41).data.qty_, 50u);
-    EXPECT_EQ(levelAt(60).data.qty_, 70u);
-    EXPECT_TRUE(ladder_.contains<Side::buy>(40));
-    EXPECT_TRUE(ladder_.contains<Side::sell>(59));
-}
-
-TEST_F(LadderTest, Remove_NodeIsNotFreed_ItsOrderIsStillReadable) {
-    OrderNode* node = addNode(Side::buy, 40, 100);
-    OrderID id = node->order.getID();
+TEST_P(LadderTest, Remove_OnlyOrder_PriceIsEmpty) {
+    OrderNode* node = addNode(side_, 40, 100);
 
     ladder_.remove(node);
 
-    EXPECT_EQ(node->order.getID(), id);
-    EXPECT_EQ(node->order.getRemainingQuantity(), 100u);
+    EXPECT_TRUE(levelAt(40).queue.empty());
+    expectLevel(40, {}, 0);
+    expectNeitherSide(40);
+    EXPECT_EQ(bestAt(ladder_, side_), NONE);
+}
+
+TEST_P(LadderTest, Remove_PartiallyFilled_OnlyWhatIsLeftComesOff) {
+    OrderNode* first = addNode(side_, 40, 100);
+    addNode(side_, 40, 50);
+    ladder_.fill(first, 30);
+
+    ladder_.remove(first);
+
+    expectLevel(40, {2}, 50);
+}
+
+TEST_P(LadderTest, Remove_FullyFilled_OnlyTheCountDrops) {
+    OrderNode* first = addNode(side_, 40, 100);
+    OrderNode* second = addNode(side_, 40, 50);
+    ladder_.fill(first, 100);
+    ladder_.fill(second, 50);
+
+    ladder_.remove(first);
+    expectLevel(40, {2}, 0);
+
+    ladder_.remove(second);
+    expectLevel(40, {}, 0);
+    expectNeitherSide(40);
+}
+
+TEST_P(LadderTest, Remove_AtOnePrice_OtherPricesAndSideUntouched) {
+    OrderNode* node = addNode(side_, 40, 100);
+    addNode(side_, 41, 50);
+    addNode(other_, 60, 70);
+
+    ladder_.remove(node);
+
+    expectLevel(41, {2}, 50);
+    expectLevel(60, {3}, 70);
+    expectOnlySide(side_, 41);
+    expectOnlySide(other_, 60);
+}
+
+TEST_P(LadderTest, Remove_OnlyOrder_EitherSideCanUseThePriceAgain) {
+    for (Side next : {side_, other_}) {
+        OrderNode* old = addNode(side_, 40, 100);
+        ladder_.remove(old);
+
+        OrderNode* fresh = addNode(next, 40, 70);
+
+        expectLevel(40, {fresh->order.getID()}, 70);
+        expectOnlySide(next, 40);
+        EXPECT_EQ(bestAt(ladder_, next), positionAt(40));
+        EXPECT_EQ(bestAt(ladder_, otherSide(next)), NONE);
+        ladder_.remove(fresh);
+    }
 }
 
 // --------------------------
 // Best and after
 // --------------------------
-TEST_F(LadderTest, Best_NewLadder_IsNoneForBothSides) {
-    EXPECT_EQ(ladder_.best<Side::buy>(), NONE);
-    EXPECT_EQ(ladder_.best<Side::sell>(), NONE);
-}
-
-TEST_F(LadderTest, Best_BuyOrdersAdded_IsTheHighestPrice) {
-    addNode(Side::buy, 10, 5);
-    addNode(Side::buy, 30, 5);
-    addNode(Side::buy, 20, 5);
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), 29u);
-}
-
-TEST_F(LadderTest, Best_SellOrdersAdded_IsTheLowestPrice) {
-    addNode(Side::sell, 70, 5);
-    addNode(Side::sell, 50, 5);
-    addNode(Side::sell, 60, 5);
-
-    EXPECT_EQ(ladder_.best<Side::sell>(), 49u);
-}
-
-TEST_F(LadderTest, Best_BuysAndSells_SidesAreIndependent) {
-    addNode(Side::buy, 10, 5);
-    addNode(Side::buy, 30, 5);
-    addNode(Side::sell, 70, 5);
-    addNode(Side::sell, 50, 5);
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), 29u);
-    EXPECT_EQ(ladder_.best<Side::sell>(), 49u);
-}
-
-TEST_F(LadderTest, Best_OnlyBuysAdded_SellsHaveNone) {
-    addNode(Side::buy, 10, 5);
-
-    EXPECT_EQ(ladder_.best<Side::sell>(), NONE);
-}
-
-TEST_F(LadderTest, Best_OnlySellsAdded_BuysHaveNone) {
-    addNode(Side::sell, 90, 5);
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), NONE);
-}
-
-TEST_F(LadderTest, Best_BestBuyRemoved_NextHighestBecomesBest) {
-    OrderNode* best = addNode(Side::buy, 30, 5);
-    addNode(Side::buy, 20, 5);
-    addNode(Side::buy, 10, 5);
+TEST_P(LadderTest, Best_Removed_NextOneTakesOver) {
+    OrderNode* best = addNode(side_, 30, 5);
+    addNode(side_, 10, 5);
+    addNode(side_, 20, 5);
+    EXPECT_EQ(walk(ladder_, side_), positionsAt({30, 20, 10}));
 
     ladder_.remove(best);
 
-    EXPECT_EQ(ladder_.best<Side::buy>(), 19u);
+    EXPECT_EQ(walk(ladder_, side_), positionsAt({20, 10}));
 }
 
-TEST_F(LadderTest, Best_BestSellRemoved_NextLowestBecomesBest) {
-    OrderNode* best = addNode(Side::sell, 50, 5);
-    addNode(Side::sell, 60, 5);
-    addNode(Side::sell, 70, 5);
+TEST_P(LadderTest, Best_BothSides_AreIndependent) {
+    OrderNode* node = addNode(side_, 30, 5);
+    OrderNode* otherNode = addNode(other_, 70, 5);
+    addNode(other_, 80, 5);
 
-    ladder_.remove(best);
+    EXPECT_EQ(walk(ladder_, side_), positionsAt({30}));
+    EXPECT_EQ(walk(ladder_, other_), positionsAt({70, 80}));
 
-    EXPECT_EQ(ladder_.best<Side::sell>(), 59u);
+    ladder_.remove(node);
+    EXPECT_EQ(bestAt(ladder_, side_), NONE);
+    EXPECT_EQ(bestAt(ladder_, other_), positionAt(70));
+
+    ladder_.remove(otherNode);
+    EXPECT_EQ(bestAt(ladder_, other_), positionAt(80));
 }
 
-TEST_F(LadderTest, Best_BestBuyFullyFilledButNotRemoved_StaysBest) {
-    OrderNode* best = addNode(Side::buy, 30, 5);
-    addNode(Side::buy, 20, 5);
+TEST_P(LadderTest, After_PositionWithoutOrders_IsTheNextOne) {
+    addNode(side_, 30, 5);
+    addNode(side_, 10, 5);
 
-    ladder_.fill(best, 5);
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), 29u);
+    EXPECT_EQ(afterAt(ladder_, side_, positionAt(100)), positionAt(30));
+    EXPECT_EQ(afterAt(ladder_, side_, positionAt(25)), positionAt(10));
+    EXPECT_EQ(afterAt(ladder_, side_, positionAt(5)), NONE);
 }
 
-TEST_F(LadderTest, Best_BestSellFullyFilledButNotRemoved_StaysBest) {
-    OrderNode* best = addNode(Side::sell, 50, 5);
-    addNode(Side::sell, 60, 5);
-
-    ladder_.fill(best, 5);
-
-    EXPECT_EQ(ladder_.best<Side::sell>(), 49u);
-}
-
-TEST_F(LadderTest, Best_EverySideEmptied_BothAreNoneAgain) {
-    OrderNode* buy = addNode(Side::buy, 30, 5);
-    OrderNode* sell = addNode(Side::sell, 70, 5);
-
-    ladder_.remove(buy);
-    ladder_.remove(sell);
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), NONE);
-    EXPECT_EQ(ladder_.best<Side::sell>(), NONE);
-}
-
-TEST_F(LadderTest, After_BuySide_StepsFromHighestToLowest) {
-    addNode(Side::buy, 10, 5);
-    addNode(Side::buy, 30, 5);
-    addNode(Side::buy, 20, 5);
-
-    EXPECT_EQ(walk<Side::buy>(ladder_), (Positions {29, 19, 9}));
-}
-
-TEST_F(LadderTest, After_SellSide_StepsFromLowestToHighest) {
-    addNode(Side::sell, 70, 5);
-    addNode(Side::sell, 50, 5);
-    addNode(Side::sell, 60, 5);
-
-    EXPECT_EQ(walk<Side::sell>(ladder_), (Positions {49, 59, 69}));
-}
-
-TEST_F(LadderTest, After_BuySide_FromAPositionNotContained) {
-    addNode(Side::buy, 30, 5);
-    addNode(Side::buy, 10, 5);
-
-    EXPECT_EQ(ladder_.after<Side::buy>(24), 9u);
-    EXPECT_EQ(ladder_.after<Side::buy>(99), 29u);
-    EXPECT_EQ(ladder_.after<Side::buy>(5), NONE);
-}
-
-TEST_F(LadderTest, After_SellSide_FromAPositionNotContained) {
-    addNode(Side::sell, 50, 5);
-    addNode(Side::sell, 70, 5);
-
-    EXPECT_EQ(ladder_.after<Side::sell>(54), 69u);
-    EXPECT_EQ(ladder_.after<Side::sell>(0), 49u);
-    EXPECT_EQ(ladder_.after<Side::sell>(80), NONE);
-}
-
-TEST_F(LadderTest, After_BuySide_IgnoresTheSells) {
-    addNode(Side::buy, 30, 5);
-    addNode(Side::sell, 20, 5);
-    addNode(Side::sell, 25, 5);
-
-    EXPECT_EQ(walk<Side::buy>(ladder_), (Positions {29}));
-    EXPECT_EQ(walk<Side::sell>(ladder_), (Positions {19, 24}));
-}
-
-TEST_F(LadderTest, After_FarGapOnTheSellSide_CrossesIt) {
+TEST_P(LadderTest, WideLadder_FarGap_IsCrossed) {
     Ladder wide(1, 100'000, 1);
-    OrderNode* near = makeNode(Side::sell, 5, 10);
-    OrderNode* far = makeNode(Side::sell, 99'990, 10);
-    place(wide, near);
-    place(wide, far);
+    OrderNode low(Order(1, OWNER, OrderType::GTC, side_, 5, 10));
+    OrderNode high(Order(2, OWNER, OrderType::GTC, side_, 99'990, 10));
+    place(wide, &low);
+    place(wide, &high);
 
-    EXPECT_EQ(wide.best<Side::sell>(), 4u);
-    EXPECT_EQ(wide.after<Side::sell>(4), 99'989u);
-    EXPECT_EQ(wide.after<Side::sell>(99'989), NONE);
+    Positions expected {4, 99'989};
+    if (side_ == Side::buy) std::reverse(expected.begin(), expected.end());
+    EXPECT_EQ(walk(wide, side_), expected);
 }
 
-TEST_F(LadderTest, After_FarGapOnTheBuySide_CrossesIt) {
-    Ladder wide(1, 100'000, 1);
-    OrderNode* near = makeNode(Side::buy, 99'990, 10);
-    OrderNode* far = makeNode(Side::buy, 5, 10);
-    place(wide, near);
-    place(wide, far);
-
-    EXPECT_EQ(wide.best<Side::buy>(), 99'989u);
-    EXPECT_EQ(wide.after<Side::buy>(99'989), 4u);
-    EXPECT_EQ(wide.after<Side::buy>(4), NONE);
-}
-
-TEST_F(LadderTest, Contains_EmptyPrices_AreNotContainedForEitherSide) {
-    for (std::size_t position {0}; position < 100; ++position) {
-        EXPECT_FALSE(ladder_.contains<Side::buy>(position)) << "position " << position;
-        EXPECT_FALSE(ladder_.contains<Side::sell>(position)) << "position " << position;
+TEST_P(LadderTest, TickOfFive_OrdersLandInTheLevelOfTheirPosition) {
+    Ladder ladder(10, 500, 5);
+    std::deque<OrderNode> nodes;
+    for (Price price : {10, 25, 500}) {
+        nodes.emplace_back(Order(nextID_++, OWNER, OrderType::GTC, side_, price, 40));
+        place(ladder, &nodes.back());
     }
+
+    Positions expected {0, 3, 98};
+    for (std::size_t i {0}; i < 3; ++i) {
+        EXPECT_EQ(ladder.level(expected[i]).queue.head, &nodes[i]);
+        EXPECT_EQ(ladder.level(expected[i]).data.qty_, 40u);
+        EXPECT_EQ(nodes[i].level, &ladder.level(expected[i]).queue);
+    }
+    if (side_ == Side::buy) std::reverse(expected.begin(), expected.end());
+    EXPECT_EQ(walk(ladder, side_), expected);
+
+    // Removing has to find the position from the price
+    for (OrderNode& node : nodes)
+        ladder.remove(&node);
+    EXPECT_EQ(bestAt(ladder, side_), NONE);
 }
 
 // --------------------------
-// Tick of 5
+// Copy and move
 // --------------------------
-TEST(LadderTickTest, AddWithTickOfFive_OrderLandsInTheLevelOfItsPosition) {
-    Ladder ladder(10, 500, 5);
-    OrderNode node(Order(1, OWNER, OrderType::GTC, Side::sell, 25, 40));
-
-    place(ladder, &node);
-
-    EXPECT_EQ(ladder.level(3).queue.head, &node);
-    EXPECT_EQ(ladder.level(3).data.qty_, 40u);
-    EXPECT_EQ(node.level, &ladder.level(3).queue);
-    EXPECT_EQ(ladder.best<Side::sell>(), 3u);
-    EXPECT_EQ(ladder.positionOf(25), 3u);
-}
-
-TEST(LadderTickTest, AddWithTickOfFive_FirstAndLastPrice_LandInTheEndLevels) {
-    Ladder ladder(10, 500, 5);
-    OrderNode first(Order(1, OWNER, OrderType::GTC, Side::buy, 10, 5));
-    OrderNode last(Order(2, OWNER, OrderType::GTC, Side::buy, 500, 6));
-
-    place(ladder, &first);
-    place(ladder, &last);
-
-    EXPECT_EQ(first.level, &ladder.level(0).queue);
-    EXPECT_EQ(last.level, &ladder.level(98).queue);
-    EXPECT_EQ(ladder.best<Side::buy>(), 98u);
-    EXPECT_EQ(ladder.after<Side::buy>(98), 0u);
-}
-
-// --------------------------
-// Move
-// --------------------------
-TEST_F(LadderTest, MoveConstruct_LevelsKeepTheirAddresses) {
-    OrderNode* buy = addNode(Side::buy, 40, 100);
-    OrderNode* sell = addNode(Side::sell, 60, 70);
-    const Level* buyLevel = &levelAt(40);
-    const Level* sellLevel = &levelAt(60);
-
-    Ladder moved(std::move(ladder_));
-
-    EXPECT_EQ(&moved.level(39), buyLevel);
-    EXPECT_EQ(&moved.level(59), sellLevel);
-    EXPECT_EQ(buy->level, &moved.level(39).queue);
-    EXPECT_EQ(sell->levelData, &moved.level(59).data);
-}
-
-TEST_F(LadderTest, MoveConstruct_TargetKeepsOrdersTotalsAndSides) {
-    OrderNode* first = addNode(Side::buy, 40, 100);
-    OrderNode* second = addNode(Side::buy, 40, 30);
-    addNode(Side::sell, 60, 70);
-
-    Ladder moved(std::move(ladder_));
-
-    EXPECT_EQ(forwardIds(moved.level(39).queue), (Ids {first->order.getID(), second->order.getID()}));
-    EXPECT_EQ(moved.level(39).data.qty_, 130u);
-    EXPECT_EQ(moved.level(39).data.count_, 2u);
-    EXPECT_EQ(moved.level(59).data.qty_, 70u);
-    EXPECT_EQ(moved.best<Side::buy>(), 39u);
-    EXPECT_EQ(moved.best<Side::sell>(), 59u);
-    EXPECT_TRUE(moved.contains<Side::buy>(39));
-    EXPECT_FALSE(moved.contains<Side::sell>(39));
-}
-
-TEST_F(LadderTest, MoveConstruct_TargetKeepsTheTranslation) {
-    Ladder source(10, 500, 5);
-
-    Ladder moved(std::move(source));
-
-    EXPECT_EQ(moved.positionOf(10), 0u);
-    EXPECT_EQ(moved.positionOf(500), 98u);
-    EXPECT_EQ(moved.positionOf(12), NONE);
-    EXPECT_EQ(moved.priceOf(98), 500);
-}
-
-TEST_F(LadderTest, MoveConstruct_AddThroughTheNewOwner_QueuesBehindTheExistingOrder) {
-    OrderNode* first = addNode(Side::buy, 40, 100);
-    Ladder moved(std::move(ladder_));
-
-    OrderNode* second = makeNode(Side::buy, 40, 30);
-    place(moved, second);
-
-    EXPECT_EQ(moved.level(39).queue.head, first);
-    EXPECT_EQ(moved.level(39).queue.tail, second);
-    EXPECT_EQ(moved.level(39).data.qty_, 130u);
-    EXPECT_EQ(second->level, &moved.level(39).queue);
-}
-
-TEST_F(LadderTest, MoveConstruct_FillThroughTheNewOwner_TakesOffTheLevel) {
-    OrderNode* node = addNode(Side::sell, 60, 100);
-    Ladder moved(std::move(ladder_));
-
-    moved.fill(node, 40);
-
-    EXPECT_EQ(moved.level(59).data.qty_, 60u);
-    EXPECT_EQ(node->order.getRemainingQuantity(), 60u);
-}
-
-TEST_F(LadderTest, MoveConstruct_RemoveThroughTheNewOwner_EmptiesThePrice) {
-    OrderNode* node = addNode(Side::buy, 40, 100);
-    Ladder moved(std::move(ladder_));
-
-    moved.remove(node);
-
-    EXPECT_TRUE(moved.level(39).queue.empty());
-    EXPECT_EQ(moved.level(39).data.count_, 0u);
-    EXPECT_FALSE(moved.contains<Side::buy>(39));
-    EXPECT_EQ(moved.best<Side::buy>(), NONE);
-}
-
-TEST_F(LadderTest, MoveConstruct_MovedFrom_BestIsNoneForBothSides) {
-    addNode(Side::buy, 40, 100);
-    addNode(Side::sell, 60, 70);
-
-    Ladder moved(std::move(ladder_));
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), NONE);
-    EXPECT_EQ(ladder_.best<Side::sell>(), NONE);
-}
-
-TEST_F(LadderTest, MoveConstruct_MovedFrom_PositionOfIsNoneForEveryPrice) {
-    addNode(Side::buy, 40, 100);
-
-    Ladder moved(std::move(ladder_));
-
-    for (Price price : {1, 40, 60, 100, 0, -1, 101})
-        EXPECT_EQ(ladder_.positionOf(price), NONE) << "price " << price;
-    EXPECT_EQ(ladder_.positionOf(std::numeric_limits<Price>::max()), NONE);
-    EXPECT_EQ(ladder_.positionOf(std::numeric_limits<Price>::min()), NONE);
-}
-
-TEST_F(LadderTest, MoveConstruct_MovedFromAssignedNewLadder_IsUsable) {
-    addNode(Side::buy, 40, 100);
-    Ladder moved(std::move(ladder_));
-
-    ladder_ = Ladder(10, 500, 5);
-    OrderNode* node = addNode(Side::sell, 25, 40);
-
-    EXPECT_EQ(ladder_.positionOf(25), 3u);
-    EXPECT_EQ(ladder_.best<Side::sell>(), 3u);
-    EXPECT_EQ(ladder_.best<Side::buy>(), NONE);
-    EXPECT_EQ(ladder_.level(3).queue.head, node);
-    EXPECT_EQ(node->level, &ladder_.level(3).queue);
-}
-
-TEST_F(LadderTest, MoveConstruct_MovedFromAssignedNewLadder_TargetIsUntouched) {
-    addNode(Side::buy, 40, 100);
-    Ladder moved(std::move(ladder_));
-
-    ladder_ = Ladder(10, 500, 5);
-    addNode(Side::sell, 25, 40);
-
-    EXPECT_EQ(moved.best<Side::buy>(), 39u);
-    EXPECT_EQ(moved.best<Side::sell>(), NONE);
-    EXPECT_EQ(moved.level(39).data.qty_, 100u);
-}
-
-TEST_F(LadderTest, MoveAssign_LevelsKeepTheirAddresses) {
-    OrderNode* buy = addNode(Side::buy, 40, 100);
-    OrderNode* sell = addNode(Side::sell, 60, 70);
-    const Level* buyLevel = &levelAt(40);
-    const Level* sellLevel = &levelAt(60);
-    Ladder target(1, 100, 1);
-
-    target = std::move(ladder_);
-
-    EXPECT_EQ(&target.level(39), buyLevel);
-    EXPECT_EQ(&target.level(59), sellLevel);
-    EXPECT_EQ(buy->level, &target.level(39).queue);
-    EXPECT_EQ(sell->levelData, &target.level(59).data);
-}
-
-TEST_F(LadderTest, MoveAssign_TargetKeepsOrdersTotalsAndSides) {
-    OrderNode* first = addNode(Side::buy, 40, 100);
-    OrderNode* second = addNode(Side::buy, 40, 30);
-    addNode(Side::sell, 60, 70);
-    Ladder target(1, 100, 1);
-
-    target = std::move(ladder_);
-
-    EXPECT_EQ(forwardIds(target.level(39).queue), (Ids {first->order.getID(), second->order.getID()}));
-    EXPECT_EQ(target.level(39).data.qty_, 130u);
-    EXPECT_EQ(target.level(59).data.count_, 1u);
-    EXPECT_EQ(target.best<Side::buy>(), 39u);
-    EXPECT_EQ(target.best<Side::sell>(), 59u);
-}
-
-TEST_F(LadderTest, MoveAssign_TargetOldContentIsGone) {
-    Ladder target(1, 200, 1);
-    OrderNode oldBuy(Order(900, OWNER, OrderType::GTC, Side::buy, 150, 5));
-    OrderNode oldSell(Order(901, OWNER, OrderType::GTC, Side::sell, 20, 5));
-    place(target, &oldBuy);
-    place(target, &oldSell);
-    addNode(Side::buy, 40, 100);
-
-    target = std::move(ladder_);
-
-    EXPECT_EQ(target.best<Side::buy>(), 39u);
-    EXPECT_EQ(target.best<Side::sell>(), NONE);
-    EXPECT_FALSE(target.contains<Side::sell>(19));
-}
-
-TEST_F(LadderTest, MoveAssign_TargetTakesTheTranslationOfTheSource) {
-    Ladder target(1, 200, 1);
-    Ladder source(10, 500, 5);
-
-    target = std::move(source);
-
-    EXPECT_EQ(target.positionOf(10), 0u);
-    EXPECT_EQ(target.positionOf(500), 98u);
-    EXPECT_EQ(target.positionOf(150), 28u);
-    EXPECT_EQ(target.positionOf(151), NONE);
-    EXPECT_EQ(target.positionOf(1), NONE);
-}
-
-TEST_F(LadderTest, MoveAssign_AddFillRemoveThroughTheNewOwner_Work) {
-    OrderNode* first = addNode(Side::buy, 40, 100);
-    Ladder target(1, 100, 1);
-    target = std::move(ladder_);
-
-    OrderNode* second = makeNode(Side::buy, 40, 30);
-    place(target, second);
-    target.fill(first, 40);
-    target.remove(first);
-
-    EXPECT_EQ(target.level(39).queue.head, second);
-    EXPECT_EQ(target.level(39).data.qty_, 30u);
-    EXPECT_EQ(target.level(39).data.count_, 1u);
-}
-
-TEST_F(LadderTest, MoveAssign_MovedFrom_BestIsNoneForBothSides) {
-    addNode(Side::buy, 40, 100);
-    addNode(Side::sell, 60, 70);
-    Ladder target(1, 100, 1);
-
-    target = std::move(ladder_);
-
-    EXPECT_EQ(ladder_.best<Side::buy>(), NONE);
-    EXPECT_EQ(ladder_.best<Side::sell>(), NONE);
-}
-
-TEST_F(LadderTest, MoveAssign_MovedFrom_PositionOfIsNoneForEveryPrice) {
-    Ladder target(1, 100, 1);
-
-    target = std::move(ladder_);
-
-    for (Price price : {1, 40, 60, 100, 0, -1, 101})
-        EXPECT_EQ(ladder_.positionOf(price), NONE) << "price " << price;
-    EXPECT_EQ(ladder_.positionOf(std::numeric_limits<Price>::max()), NONE);
-    EXPECT_EQ(ladder_.positionOf(std::numeric_limits<Price>::min()), NONE);
-}
-
-TEST_F(LadderTest, MoveAssign_MovedFromAssignedNewLadder_IsUsable) {
-    addNode(Side::buy, 40, 100);
-    Ladder target(1, 100, 1);
-    target = std::move(ladder_);
-
-    ladder_ = Ladder(5, 50, 5);
-    OrderNode* node = makeNode(Side::buy, 20, 9);
-    place(ladder_, node);
-
-    EXPECT_EQ(ladder_.positionOf(20), 3u);
-    EXPECT_EQ(ladder_.best<Side::buy>(), 3u);
-    EXPECT_EQ(ladder_.level(3).data.qty_, 9u);
-    EXPECT_EQ(node->level, &ladder_.level(3).queue);
-}
-
-TEST(LadderMoveTest, Traits_CopyIsDeletedAndMoveIsAllowed) {
+TEST(LadderTraitsTest, CopyIsDeletedAndMoveIsAllowed) {
     EXPECT_FALSE(std::is_copy_constructible_v<Ladder>);
     EXPECT_FALSE(std::is_copy_assignable_v<Ladder>);
     EXPECT_TRUE(std::is_move_constructible_v<Ladder>);
     EXPECT_TRUE(std::is_move_assignable_v<Ladder>);
+}
+
+// Two orders at 40 and one on the other side at 60, then moved away from ladder_
+class MovedLadderTest : public LadderTest {
+protected:
+    Ladder target_ {1, 200, 1};
+    OrderNode old_ {Order(900, OWNER, OrderType::GTC, otherSide(GetParam()), 150, 5)};
+    OrderNode* first_ {nullptr};
+    OrderNode* second_ {nullptr};
+    OrderNode* third_ {nullptr};
+
+    void SetUp() override {
+        // To be replaced by the move
+        place(target_, &old_);
+
+        first_ = addNode(side_, 40, 100);
+        second_ = addNode(side_, 40, 30);
+        third_ = addNode(other_, 60, 70);
+    }
+
+    // The orders point to their level, so it must not have moved
+    void expectHoldsEverything(const Ladder& ladder) const {
+        expectLevel(ladder, 40, {1, 2}, 130);
+        expectLevel(ladder, 60, {3}, 70);
+        EXPECT_EQ(walk(ladder, side_), positionsAt({40}));
+        EXPECT_EQ(walk(ladder, other_), positionsAt({60}));
+        EXPECT_FALSE(containsAt(ladder, other_, positionAt(40)));
+        EXPECT_EQ(ladder.positionOf(1), 0u);
+        EXPECT_EQ(ladder.positionOf(100), 99u);
+        EXPECT_EQ(ladder.positionOf(101), NONE);
+        EXPECT_EQ(ladder.priceOf(99), 100);
+    }
+
+    void expectMovedFrom(const Ladder& ladder) const {
+        EXPECT_EQ(bestAt(ladder, side_), NONE);
+        EXPECT_EQ(bestAt(ladder, other_), NONE);
+        expectNone(ladder, {1, 40, 60, 100, 0, -1, 101, MAX, MIN});
+    }
+
+    void expectUsable(Ladder& ladder) {
+        OrderNode* fresh = makeNode(side_, 40, 10);
+        place(ladder, fresh);
+        ladder.fill(first_, 60);
+        expectLevel(ladder, 40, {1, 2, 4}, 80);
+
+        ladder.remove(first_);
+        ladder.remove(fresh);
+        ladder.remove(second_);
+        expectLevel(ladder, 40, {}, 0);
+        EXPECT_EQ(bestAt(ladder, side_), NONE);
+
+        ladder.remove(third_);
+        EXPECT_EQ(bestAt(ladder, other_), NONE);
+    }
+};
+
+INSTANTIATE_FOR_BOTH_SIDES(MovedLadderTest);
+
+TEST_P(MovedLadderTest, MoveConstruct_TargetHoldsEverythingAndStaysUsable) {
+    Ladder target(std::move(ladder_));
+
+    expectHoldsEverything(target);
+    expectMovedFrom(ladder_);
+    expectUsable(target);
+}
+
+TEST_P(MovedLadderTest, MoveAssign_TargetLosesItsOldContentAndStaysUsable) {
+    target_ = std::move(ladder_);
+
+    expectHoldsEverything(target_);
+    expectMovedFrom(ladder_);
+    expectUsable(target_);
+}
+
+TEST_P(MovedLadderTest, MoveAssign_TargetTakesTheTickOfTheSource) {
+    target_ = Ladder(10, 500, 5);
+
+    expectRoundTrip(target_, 10, 5, 99);
+    expectNone(target_, {1, 12, 151, 505});
+}
+
+TEST_P(MovedLadderTest, MovedFrom_AssignedANewLadder_IsUsableAndTargetIsUntouched) {
+    target_ = std::move(ladder_);
+
+    ladder_ = Ladder(10, 500, 5);
+    OrderNode node(Order(50, OWNER, OrderType::GTC, side_, 25, 40));
+    place(ladder_, &node);
+
+    EXPECT_EQ(ladder_.level(3).queue.head, &node);
+    EXPECT_EQ(node.level, &ladder_.level(3).queue);
+    EXPECT_EQ(walk(ladder_, side_), (Positions {3}));
+    EXPECT_EQ(bestAt(ladder_, other_), NONE);
+    expectHoldsEverything(target_);
 }
 
 // --------------------------
@@ -1385,7 +587,7 @@ struct Model {
 
 } // namespace
 
-// Bands of 60 prices with a tick of 5, so prices empty and change side often
+// 60 prices with a tick of 5, so prices empty and change side often
 TEST(LadderRandomTest, RandomOperations_MatchAModel) {
     constexpr Price MIN_PRICE = 10;
     constexpr Price TICK = 5;
@@ -1416,19 +618,19 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
 
     auto checkPrice = [&](Price price, std::size_t step) {
         const Level& level = ladder.level(positionOfPrice(price));
-        Ids expectedIds;
+        IDs expectedIDs;
         Quantity expectedQuantity {0};
         Quantity expectedCount {0};
         for (Side side : {Side::buy, Side::sell}) {
             auto it = model.of(side).find(price);
             if (it == model.of(side).end()) continue;
             for (const Resting& resting : it->second) {
-                expectedIds.push_back(resting.node->order.getID());
+                expectedIDs.push_back(resting.node->order.getID());
                 expectedQuantity += resting.remaining;
                 ++expectedCount;
             }
         }
-        EXPECT_EQ(forwardIds(level.queue), expectedIds) << "step " << step << " price " << price;
+        EXPECT_EQ(forwardIDs(level.queue), expectedIDs) << "step " << step << " price " << price;
         EXPECT_EQ(level.data.qty_, expectedQuantity) << "step " << step << " price " << price;
         EXPECT_EQ(level.data.count_, expectedCount) << "step " << step << " price " << price;
         EXPECT_EQ(ladder.contains<Side::buy>(positionOfPrice(price)), model.buys.contains(price)) << "step " << step;
@@ -1502,6 +704,6 @@ TEST(LadderRandomTest, RandomOperations_MatchAModel) {
     Positions expectedSells;
     for (const auto& [price, queue] : model.sells)
         expectedSells.push_back(positionOfPrice(price));
-    EXPECT_EQ(walk<Side::buy>(ladder), expectedBuys);
-    EXPECT_EQ(walk<Side::sell>(ladder), expectedSells);
+    EXPECT_EQ(walk(ladder, Side::buy), expectedBuys);
+    EXPECT_EQ(walk(ladder, Side::sell), expectedSells);
 }

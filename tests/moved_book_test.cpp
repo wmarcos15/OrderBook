@@ -1,16 +1,14 @@
 #include <gtest/gtest.h>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
-#include <vector>
 #include "orderbook.hpp"
+#include "test_utils.hpp"
 #include "types.hpp"
 
 using namespace orderbook;
-
-// Different owners, so no trade is a self trade
-constexpr OwnerID BUYER  = 1;
-constexpr OwnerID SELLER = 2;
+using namespace orderbook::test;
 
 constexpr Price LEGAL_PRICE = 100;
 
@@ -24,8 +22,6 @@ static void expectLogicErrorOnly(Action action) {
         ADD_FAILURE() << "std::invalid_argument was thrown";
     } catch (const std::logic_error&) {
         SUCCEED();
-    } catch (...) {
-        ADD_FAILURE() << "something other than std::logic_error was thrown";
     }
 }
 
@@ -44,241 +40,160 @@ struct MoveAssign {
     }
 };
 
-using MoveKinds = ::testing::Types<MoveConstruct, MoveAssign>;
-
+// The source held two bids at 99 and an ask at 101
 template<typename Mover>
 class MovedBookTest : public ::testing::Test {
 protected:
     OrderBook source_;
     std::optional<OrderBook> target_;
-    OrderID firstBidID_ {0};
-    OrderID secondBidID_ {0};
-    OrderID askID_ {0};
+    OrderID firstBid_ {0};
+    OrderID secondBid_ {0};
+    OrderID ask_ {0};
 
     void SetUp() override {
-        firstBidID_ = source_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 50).orderID;
-        secondBidID_ = source_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30).orderID;
-        askID_ = source_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 20).orderID;
+        firstBid_ = source_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 50).orderID;
+        secondBid_ = source_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 30).orderID;
+        ask_ = source_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 20).orderID;
+        source_.setSelfTradePolicy(BUYER, SelfTradePolicy::cancelOldest);
 
         Mover::apply(source_, target_);
     }
 
+    void expectTargetHoldsEverything() {
+        EXPECT_EQ(target_->size(), 3u);
+        EXPECT_EQ(levelsOf(*target_, Side::buy), (Levels {{99, 80, 2}}));
+        EXPECT_EQ(levelsOf(*target_, Side::sell), (Levels {{101, 20, 1}}));
+        ASSERT_NE(target_->getBestBid(), nullptr);
+        EXPECT_EQ(target_->getBestBid()->getID(), firstBid_);
+        ASSERT_NE(target_->getBestAsk(), nullptr);
+        EXPECT_EQ(target_->getBestAsk()->getID(), ask_);
+        EXPECT_NE(target_->getOrder(secondBid_), nullptr);
+    }
+
+    // Every call a moved-from book takes
     void touchSource() {
-        source_.cancelOrder(firstBidID_);
-        source_.cancelOrder(askID_);
-        source_.modifyOrder(secondBidID_, 98, 10);
+        for (OrderID id : {firstBid_, secondBid_, ask_}) {
+            source_.cancelOrder(id);
+            source_.modifyOrder(id, 98, 10);
+        }
         source_.addMarketOrder(BUYER, Side::buy, 10);
         source_.addMarketOrder(SELLER, Side::sell, 10);
-        source_.getBestBid();
-        source_.getBestAsk();
-        source_.getDepth(Side::buy, 5);
-        source_.getLevelQuantity(Side::buy, 99);
-        try {
-            source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10);
-        } catch (const std::logic_error&) {
-            // Refusing is expected
-        }
+        source_.setSelfTradePolicy(BUYER, SelfTradePolicy::cancelNewest);
+        EXPECT_THROW(source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10), std::logic_error);
     }
 };
 
+using MoveKinds = ::testing::Types<MoveConstruct, MoveAssign>;
 TYPED_TEST_SUITE(MovedBookTest, MoveKinds);
 
-// --------------------------
-// Adding orders
-// --------------------------
-TYPED_TEST(MovedBookTest, AddOrder_GTCBuy_ThrowsLogicErrorNotInvalidArgument) {
-    expectLogicErrorOnly([&] { this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10); });
-}
-
-TYPED_TEST(MovedBookTest, AddOrder_GTCSell_ThrowsLogicErrorNotInvalidArgument) {
-    expectLogicErrorOnly([&] { this->source_.addOrder(SELLER, OrderType::GTC, Side::sell, LEGAL_PRICE, 10); });
-}
-
-TYPED_TEST(MovedBookTest, AddOrder_IOCBuy_ThrowsLogicErrorNotInvalidArgument) {
-    expectLogicErrorOnly([&] { this->source_.addOrder(BUYER, OrderType::IOC, Side::buy, LEGAL_PRICE, 10); });
-}
-
-TYPED_TEST(MovedBookTest, AddOrder_IOCSell_ThrowsLogicErrorNotInvalidArgument) {
-    expectLogicErrorOnly([&] { this->source_.addOrder(SELLER, OrderType::IOC, Side::sell, LEGAL_PRICE, 10); });
-}
-
-TYPED_TEST(MovedBookTest, AddOrder_FOKBuy_ThrowsLogicErrorNotInvalidArgument) {
-    expectLogicErrorOnly([&] { this->source_.addOrder(BUYER, OrderType::FOK, Side::buy, LEGAL_PRICE, 10); });
-}
-
-TYPED_TEST(MovedBookTest, AddOrder_FOKSell_ThrowsLogicErrorNotInvalidArgument) {
-    expectLogicErrorOnly([&] { this->source_.addOrder(SELLER, OrderType::FOK, Side::sell, LEGAL_PRICE, 10); });
-}
-
-TYPED_TEST(MovedBookTest, AddOrder_Refused_RestsNothing) {
-    try {
-        this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10);
-    } catch (const std::logic_error&) {
-    }
-
-    EXPECT_TRUE(this->source_.empty());
-    EXPECT_EQ(this->source_.getBestBid(), nullptr);
+TEST(MovedBookTraitsTest, CopyIsDeletedAndMoveIsAllowed) {
+    EXPECT_FALSE(std::is_copy_constructible_v<OrderBook>);
+    EXPECT_FALSE(std::is_copy_assignable_v<OrderBook>);
+    EXPECT_TRUE(std::is_move_constructible_v<OrderBook>);
+    EXPECT_TRUE(std::is_move_assignable_v<OrderBook>);
 }
 
 // --------------------------
-// Cancelling and modifying
+// The book moved from
 // --------------------------
-TYPED_TEST(MovedBookTest, CancelOrder_BidThatWasInIt_HasNoEffect) {
-    EXPECT_NO_THROW(this->source_.cancelOrder(this->firstBidID_));
-
-    EXPECT_NE(this->target_->getOrder(this->firstBidID_), nullptr);
-    EXPECT_EQ(this->target_->size(), 3u);
-}
-
-TYPED_TEST(MovedBookTest, CancelOrder_AskThatWasInIt_HasNoEffect) {
-    EXPECT_NO_THROW(this->source_.cancelOrder(this->askID_));
-
-    EXPECT_NE(this->target_->getOrder(this->askID_), nullptr);
-    EXPECT_EQ(this->target_->size(), 3u);
-}
-
-TYPED_TEST(MovedBookTest, CancelOrder_IdThatWasInIt_LeavesTheMovedFromBookEmpty) {
-    this->source_.cancelOrder(this->firstBidID_);
-
-    EXPECT_TRUE(this->source_.empty());
-    EXPECT_EQ(this->source_.size(), 0u);
-}
-
-TYPED_TEST(MovedBookTest, ModifyOrder_BidThatWasInItNewPrice_ReturnsNullopt) {
-    EXPECT_EQ(this->source_.modifyOrder(this->firstBidID_, 98, 50), std::nullopt);
-}
-
-TYPED_TEST(MovedBookTest, ModifyOrder_BidThatWasInItQuantityDown_ReturnsNullopt) {
-    EXPECT_EQ(this->source_.modifyOrder(this->firstBidID_, 99, 10), std::nullopt);
-}
-
-TYPED_TEST(MovedBookTest, ModifyOrder_AskThatWasInItNewPrice_ReturnsNullopt) {
-    EXPECT_EQ(this->source_.modifyOrder(this->askID_, 102, 20), std::nullopt);
-}
-
-TYPED_TEST(MovedBookTest, ModifyOrder_AskThatWasInItQuantityDown_ReturnsNullopt) {
-    EXPECT_EQ(this->source_.modifyOrder(this->askID_, 101, 5), std::nullopt);
-}
-
-TYPED_TEST(MovedBookTest, ModifyOrder_IdThatWasInIt_LeavesTheTargetAlone) {
-    this->source_.modifyOrder(this->firstBidID_, 98, 10);
-
-    EXPECT_EQ(this->target_->getOrder(this->firstBidID_)->getPrice(), 99);
-    EXPECT_EQ(this->target_->getOrder(this->firstBidID_)->getRemainingQuantity(), 50u);
-}
-
-// --------------------------
-// Lookups
-// --------------------------
-TYPED_TEST(MovedBookTest, GetOrder_BidThatWasInIt_ReturnsNullptr) {
-    EXPECT_EQ(this->source_.getOrder(this->firstBidID_), nullptr);
-    EXPECT_EQ(this->source_.getOrder(this->secondBidID_), nullptr);
-}
-
-TYPED_TEST(MovedBookTest, GetOrder_AskThatWasInIt_ReturnsNullptr) {
-    EXPECT_EQ(this->source_.getOrder(this->askID_), nullptr);
-}
-
-TYPED_TEST(MovedBookTest, GetBestBid_AfterTheMove_ReturnsNullptr) {
-    EXPECT_EQ(this->source_.getBestBid(), nullptr);
-}
-
-TYPED_TEST(MovedBookTest, GetBestAsk_AfterTheMove_ReturnsNullptr) {
-    EXPECT_EQ(this->source_.getBestAsk(), nullptr);
-}
-
-TYPED_TEST(MovedBookTest, GetLevelQuantity_BuyPriceThatHadOrders_ReturnsZero) {
+TYPED_TEST(MovedBookTest, Source_LooksEmpty) {
+    expectEmptyBook(this->source_);
+    for (OrderID id : {this->firstBid_, this->secondBid_, this->ask_})
+        EXPECT_EQ(this->source_.getOrder(id), nullptr);
     EXPECT_EQ(this->source_.getLevelQuantity(Side::buy, 99), 0u);
-}
-
-TYPED_TEST(MovedBookTest, GetLevelQuantity_SellPriceThatHadOrders_ReturnsZero) {
-    EXPECT_EQ(this->source_.getLevelQuantity(Side::sell, 101), 0u);
-}
-
-TYPED_TEST(MovedBookTest, GetLevelCount_BuyPriceThatHadOrders_ReturnsZero) {
     EXPECT_EQ(this->source_.getLevelCount(Side::buy, 99), 0u);
-}
-
-TYPED_TEST(MovedBookTest, GetLevelCount_SellPriceThatHadOrders_ReturnsZero) {
+    EXPECT_EQ(this->source_.getLevelQuantity(Side::sell, 101), 0u);
     EXPECT_EQ(this->source_.getLevelCount(Side::sell, 101), 0u);
 }
 
-TYPED_TEST(MovedBookTest, GetDepth_BuySide_IsEmpty) {
-    EXPECT_TRUE(this->source_.getDepth(Side::buy, 5).empty());
+TYPED_TEST(MovedBookTest, Source_AddOrder_ThrowsLogicErrorAndRestsNothing) {
+    for (Side side : {Side::buy, Side::sell})
+        for (OrderType type : {OrderType::GTC, OrderType::IOC, OrderType::FOK})
+            for (Price price : {1, 99, LEGAL_PRICE, 100'000})
+                expectLogicErrorOnly([&] { this->source_.addOrder(ownerOf(side), type, side, price, 10); });
+
+    expectEmptyBook(this->source_);
 }
 
-TYPED_TEST(MovedBookTest, GetDepth_SellSide_IsEmpty) {
-    EXPECT_TRUE(this->source_.getDepth(Side::sell, 5).empty());
+TYPED_TEST(MovedBookTest, Source_IllegalPriceOrQuantity_StillThrowsInvalidArgument) {
+    EXPECT_THROW(this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 0, 10), std::invalid_argument);
+    EXPECT_THROW(this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 100'001, 10), std::invalid_argument);
+    EXPECT_THROW(this->source_.addMarketOrder(BUYER, Side::buy, 0), std::invalid_argument);
 }
 
-TYPED_TEST(MovedBookTest, Size_AfterTheMove_IsZero) {
-    EXPECT_EQ(this->source_.size(), 0u);
+TYPED_TEST(MovedBookTest, Source_MarketOrder_HasNoTrades) {
+    for (Side side : {Side::buy, Side::sell})
+        EXPECT_TRUE(this->source_.addMarketOrder(ownerOf(side), side, 10).trades.empty());
 }
 
-TYPED_TEST(MovedBookTest, Empty_AfterTheMove_IsTrue) {
-    EXPECT_TRUE(this->source_.empty());
+TYPED_TEST(MovedBookTest, Source_CancelOrder_HasNoEffect) {
+    for (OrderID id : {this->firstBid_, this->secondBid_, this->ask_})
+        this->source_.cancelOrder(id);
+
+    expectEmptyBook(this->source_);
+    this->expectTargetHoldsEverything();
+}
+
+TYPED_TEST(MovedBookTest, Source_ModifyOrder_ReturnsNullopt) {
+    EXPECT_EQ(this->source_.modifyOrder(this->firstBid_, 98, 50), std::nullopt);
+    EXPECT_EQ(this->source_.modifyOrder(this->firstBid_, 99, 10), std::nullopt);
+    EXPECT_EQ(this->source_.modifyOrder(this->ask_, 102, 20), std::nullopt);
+    EXPECT_EQ(this->source_.modifyOrder(this->ask_, 101, 5), std::nullopt);
+    this->expectTargetHoldsEverything();
 }
 
 // --------------------------
-// Market orders
+// The book moved to
 // --------------------------
-TYPED_TEST(MovedBookTest, AddMarketOrder_Buy_DoesNotThrowAndHasNoTrades) {
-    OrderResult result;
-
-    EXPECT_NO_THROW(result = this->source_.addMarketOrder(BUYER, Side::buy, 10));
-
-    EXPECT_TRUE(result.trades.empty());
+TYPED_TEST(MovedBookTest, Target_HoldsEverything) {
+    this->expectTargetHoldsEverything();
+    EXPECT_EQ(this->target_->getLevelQuantity(Side::buy, 40), 0u);
 }
 
-TYPED_TEST(MovedBookTest, AddMarketOrder_Sell_DoesNotThrowAndHasNoTrades) {
-    OrderResult result;
-
-    EXPECT_NO_THROW(result = this->source_.addMarketOrder(SELLER, Side::sell, 10));
-
-    EXPECT_TRUE(result.trades.empty());
+TYPED_TEST(MovedBookTest, Target_KeepsPoliciesAndNextID) {
+    EXPECT_EQ(this->target_->getSelfTradePolicy(BUYER), SelfTradePolicy::cancelOldest);
+    EXPECT_EQ(this->target_->addOrder(BUYER, OrderType::GTC, Side::buy, 95, 10).orderID, this->ask_ + 1);
 }
 
 TYPED_TEST(MovedBookTest, Target_AfterTouchingTheSource_StillHoldsEverything) {
     this->touchSource();
 
-    EXPECT_EQ(this->target_->size(), 3u);
-    EXPECT_EQ(this->target_->getLevelQuantity(Side::buy, 99), 80u);
-    EXPECT_EQ(this->target_->getLevelCount(Side::buy, 99), 2u);
-    EXPECT_EQ(this->target_->getLevelQuantity(Side::sell, 101), 20u);
-    ASSERT_NE(this->target_->getBestBid(), nullptr);
-    EXPECT_EQ(this->target_->getBestBid()->getID(), this->firstBidID_);
-    ASSERT_NE(this->target_->getBestAsk(), nullptr);
-    EXPECT_EQ(this->target_->getBestAsk()->getID(), this->askID_);
+    this->expectTargetHoldsEverything();
+    EXPECT_EQ(this->target_->getSelfTradePolicy(BUYER), SelfTradePolicy::cancelOldest);
 }
 
 TYPED_TEST(MovedBookTest, Target_AfterTouchingTheSource_CanMatch) {
     this->touchSource();
 
-    auto result = this->target_->addOrder(SELLER, OrderType::GTC, Side::sell, 99, 60);
+    Trades trades = this->target_->addOrder(SELLER, OrderType::GTC, Side::sell, 99, 60).trades;
 
-    ASSERT_EQ(result.trades.size(), 2u);
-    EXPECT_EQ(result.trades[0].bidID, this->firstBidID_);
-    EXPECT_EQ(result.trades[0].quantity, 50u);
-    EXPECT_EQ(result.trades[1].bidID, this->secondBidID_);
-    EXPECT_EQ(result.trades[1].quantity, 10u);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[0].bidID, this->firstBid_);
+    EXPECT_EQ(trades[0].quantity, 50u);
+    EXPECT_EQ(trades[1].bidID, this->secondBid_);
+    EXPECT_EQ(trades[1].quantity, 10u);
+    EXPECT_EQ(levelsOf(*this->target_, Side::buy), (Levels {{99, 20, 1}}));
 }
 
 TYPED_TEST(MovedBookTest, Target_AfterTouchingTheSource_CanCancelAndModify) {
     this->touchSource();
 
-    this->target_->cancelOrder(this->firstBidID_);
-    auto result = this->target_->modifyOrder(this->askID_, 101, 5);
+    this->target_->cancelOrder(this->firstBid_);
+    auto reduced = this->target_->modifyOrder(this->secondBid_, 99, 10);
+    auto moved = this->target_->modifyOrder(this->ask_, 102, 20);
 
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(this->target_->getOrder(this->firstBidID_), nullptr);
-    EXPECT_EQ(this->target_->getLevelQuantity(Side::buy, 99), 30u);
-    EXPECT_EQ(this->target_->getLevelQuantity(Side::sell, 101), 5u);
+    ASSERT_TRUE(reduced.has_value());
+    EXPECT_EQ(reduced->orderID, this->secondBid_);
+    ASSERT_TRUE(moved.has_value());
+    EXPECT_EQ(this->target_->getOrder(this->firstBid_), nullptr);
+    EXPECT_EQ(levelsOf(*this->target_, Side::buy), (Levels {{99, 10, 1}}));
+    EXPECT_EQ(levelsOf(*this->target_, Side::sell), (Levels {{102, 20, 1}}));
 }
 
 TYPED_TEST(MovedBookTest, Target_AfterTouchingTheSource_CanTakeNewOrders) {
     this->touchSource();
 
-    auto result = this->target_->addOrder(BUYER, OrderType::GTC, Side::buy, 100, 7);
+    OrderResult result = this->target_->addOrder(BUYER, OrderType::GTC, Side::buy, 100, 7);
 
     EXPECT_TRUE(result.trades.empty());
     ASSERT_NE(this->target_->getBestBid(), nullptr);
@@ -286,78 +201,63 @@ TYPED_TEST(MovedBookTest, Target_AfterTouchingTheSource_CanTakeNewOrders) {
     EXPECT_EQ(this->target_->size(), 4u);
 }
 
+TYPED_TEST(MovedBookTest, Target_MovedAgain_StillWorks) {
+    OrderBook last(std::move(*this->target_));
+
+    last.cancelOrder(this->firstBid_);
+    Trades trades = last.addMarketOrder(SELLER, Side::sell, 30).trades;
+
+    ASSERT_EQ(trades.size(), 1u);
+    EXPECT_EQ(trades[0].bidID, this->secondBid_);
+    expectEmptyBook(*this->target_);
+}
+
+TEST(MovedBookConfigTest, OntoABookWithAnotherBand_TakesTheBandOfTheSource) {
+    OrderBook source(BookConfig {5, 10, 200});
+    source.addOrder(BUYER, OrderType::GTC, Side::buy, 15, 10);
+    OrderBook target;
+    target.addOrder(SELLER, OrderType::GTC, Side::sell, 50'000, 10);
+
+    target = std::move(source);
+
+    EXPECT_EQ(target.getBookConfig().tickSize, 5);
+    EXPECT_EQ(target.getBookConfig().minPrice, 10);
+    EXPECT_EQ(target.getBookConfig().maxPrice, 200);
+    EXPECT_EQ(levelsOf(target, Side::buy), (Levels {{15, 10, 1}}));
+    EXPECT_EQ(target.getBestAsk(), nullptr);
+    EXPECT_THROW(target.addOrder(BUYER, OrderType::GTC, Side::buy, 12, 10), std::invalid_argument);
+    EXPECT_THROW(target.addOrder(BUYER, OrderType::GTC, Side::buy, 205, 10), std::invalid_argument);
+}
+
 // --------------------------
-// Fresh book assigned
+// A fresh book assigned to the source
 // --------------------------
-TYPED_TEST(MovedBookTest, AssignedFreshBook_StartsEmpty) {
+TYPED_TEST(MovedBookTest, FreshBookAssigned_StartsEmpty) {
     this->source_ = OrderBook();
 
-    EXPECT_TRUE(this->source_.empty());
-    EXPECT_EQ(this->source_.size(), 0u);
-    EXPECT_EQ(this->source_.getBestBid(), nullptr);
-    EXPECT_EQ(this->source_.getBestAsk(), nullptr);
-    EXPECT_EQ(this->source_.getOrder(this->firstBidID_), nullptr);
+    expectEmptyBook(this->source_);
+    EXPECT_EQ(this->source_.getOrder(this->firstBid_), nullptr);
+    EXPECT_EQ(this->source_.getSelfTradePolicy(BUYER), SelfTradePolicy::cancelNewest);
 }
 
-TYPED_TEST(MovedBookTest, AssignedFreshBook_AddOrder_Rests) {
+TYPED_TEST(MovedBookTest, FreshBookAssigned_WorksAndLeavesTheTargetAlone) {
     this->source_ = OrderBook();
 
-    auto result = this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10);
+    OrderID bid = this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 10).orderID;
+    OrderID ask = this->source_.addOrder(SELLER, OrderType::GTC, Side::sell, 101, 10).orderID;
+    EXPECT_EQ(bid, 1u);
+    EXPECT_EQ(levelsOf(this->source_, Side::buy), (Levels {{99, 10, 1}}));
 
-    ASSERT_NE(this->source_.getBestBid(), nullptr);
-    EXPECT_EQ(this->source_.getBestBid()->getID(), result.orderID);
-    EXPECT_EQ(this->source_.getLevelQuantity(Side::buy, LEGAL_PRICE), 10u);
-    EXPECT_EQ(this->source_.size(), 1u);
-}
-
-TYPED_TEST(MovedBookTest, AssignedFreshBook_Match_TradesAtTheRestingPrice) {
-    this->source_ = OrderBook();
-    this->source_.addOrder(SELLER, OrderType::GTC, Side::sell, LEGAL_PRICE, 10);
-
-    auto result = this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10);
-
-    ASSERT_EQ(result.trades.size(), 1u);
-    EXPECT_EQ(result.trades[0].price, LEGAL_PRICE);
-    EXPECT_TRUE(this->source_.empty());
-}
-
-TYPED_TEST(MovedBookTest, AssignedFreshBook_CancelAndModify_Work) {
-    this->source_ = OrderBook();
-    OrderID bid = this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10).orderID;
-    OrderID ask = this->source_.addOrder(SELLER, OrderType::GTC, Side::sell, 200, 10).orderID;
-
+    EXPECT_EQ(this->source_.addMarketOrder(BUYER, Side::buy, 4).trades.size(), 1u);
+    this->source_.modifyOrder(ask, 101, 2);
     this->source_.cancelOrder(bid);
-    auto result = this->source_.modifyOrder(ask, 200, 4);
-
-    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(levelsOf(this->source_, Side::sell), (Levels {{101, 2, 1}}));
     EXPECT_EQ(this->source_.getBestBid(), nullptr);
-    EXPECT_EQ(this->source_.getLevelQuantity(Side::sell, 200), 4u);
+
+    this->expectTargetHoldsEverything();
 }
 
-TYPED_TEST(MovedBookTest, AssignedFreshBook_GetDepth_ListsItsLevels) {
-    this->source_ = OrderBook();
-    this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 90, 1);
-    this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 95, 2);
-
-    auto depth = this->source_.getDepth(Side::buy, 5);
-
-    ASSERT_EQ(depth.size(), 2u);
-    EXPECT_EQ(depth[0].price, 95);
-    EXPECT_EQ(depth[1].price, 90);
-}
-
-TYPED_TEST(MovedBookTest, AssignedFreshBook_MarketOrder_Sweeps) {
-    this->source_ = OrderBook();
-    this->source_.addOrder(SELLER, OrderType::GTC, Side::sell, 150, 10);
-
-    auto result = this->source_.addMarketOrder(BUYER, Side::buy, 4);
-
-    ASSERT_EQ(result.trades.size(), 1u);
-    EXPECT_EQ(result.trades[0].quantity, 4u);
-    EXPECT_EQ(this->source_.getLevelQuantity(Side::sell, 150), 6u);
-}
-
-TYPED_TEST(MovedBookTest, AssignedFreshBook_WithAnotherConfig_UsesTheNewBand) {
+TYPED_TEST(MovedBookTest, FreshBookAssigned_WithAnotherConfig_UsesTheNewBand) {
     this->source_ = OrderBook(BookConfig {5, 10, 200});
 
     EXPECT_THROW(this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 12, 10), std::invalid_argument);
@@ -365,12 +265,4 @@ TYPED_TEST(MovedBookTest, AssignedFreshBook_WithAnotherConfig_UsesTheNewBand) {
     this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 15, 10);
     EXPECT_EQ(this->source_.getLevelQuantity(Side::buy, 15), 10u);
     EXPECT_EQ(this->source_.getBookConfig().tickSize, 5);
-}
-
-TYPED_TEST(MovedBookTest, AssignedFreshBook_LeavesTheTargetAlone) {
-    this->source_ = OrderBook();
-    this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 99, 10);
-
-    EXPECT_EQ(this->target_->size(), 3u);
-    EXPECT_EQ(this->target_->getLevelQuantity(Side::buy, 99), 80u);
 }
