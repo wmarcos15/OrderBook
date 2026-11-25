@@ -207,17 +207,14 @@ OrderResult OrderBook::addAt(std::size_t position, OwnerID owner, OrderType type
 }
 
 OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
-    // Checked here as well: against an empty opposite side addAt is never reached
     if (qty == 0)
         throw std::invalid_argument("quantity must be greater than zero");
 
-    bool oppositeIsEmpty = (side == Side::buy) ? ladder_.best<Side::sell>() == detail::Ladder::NONE
-                                               : ladder_.best<Side::buy>() == detail::Ladder::NONE;
-    if (oppositeIsEmpty) return {nextID_++, {}};
-
     // An IOC never rests, so the band edge works as the worst price
     Price price = (side == Side::buy) ? config_.maxPrice : config_.minPrice;
-    return addAt(ladder_.positionOf(price), owner, OrderType::IOC, side, price, qty);
+    std::size_t position = ladder_.positionOf(price);
+    if (position == detail::Ladder::NONE) rejectPrice(price);
+    return addAt(position, owner, OrderType::IOC, side, price, qty);
 }
 
 detail::OrderNode* OrderBook::store(const Order& order) {

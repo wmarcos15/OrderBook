@@ -192,7 +192,7 @@ Semantics worth knowing:
   into its own price levels, so a copy would share state with the original;
   copying is a compile error rather than a silent bug. Pass a book by
   reference, or `std::move` it. A book that has been moved from is empty, and
-  `addOrder` on it throws `std::logic_error`.
+  `addOrder` and `addMarketOrder` on it throw `std::logic_error`.
 - If memory runs out, the call throws `std::bad_alloc` and the book stays
   usable. What the call had already traded stays traded but is not reported;
   if it had not traded yet, nothing has changed except that an ID is used.

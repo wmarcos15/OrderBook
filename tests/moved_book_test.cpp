@@ -76,10 +76,10 @@ protected:
             source_.cancelOrder(id);
             source_.modifyOrder(id, 98, 10);
         }
-        source_.addMarketOrder(BUYER, Side::buy, 10);
-        source_.addMarketOrder(SELLER, Side::sell, 10);
         source_.setSelfTradePolicy(BUYER, SelfTradePolicy::cancelNewest);
         EXPECT_THROW(source_.addOrder(BUYER, OrderType::GTC, Side::buy, LEGAL_PRICE, 10), std::logic_error);
+        EXPECT_THROW(source_.addMarketOrder(BUYER, Side::buy, 10), std::logic_error);
+        EXPECT_THROW(source_.addMarketOrder(SELLER, Side::sell, 10), std::logic_error);
     }
 };
 
@@ -121,9 +121,11 @@ TYPED_TEST(MovedBookTest, Source_IllegalPriceOrQuantity_StillThrowsInvalidArgume
     EXPECT_THROW(this->source_.addMarketOrder(BUYER, Side::buy, 0), std::invalid_argument);
 }
 
-TYPED_TEST(MovedBookTest, Source_MarketOrder_HasNoTrades) {
+TYPED_TEST(MovedBookTest, Source_MarketOrder_ThrowsLogicError) {
     for (Side side : {Side::buy, Side::sell})
-        EXPECT_TRUE(this->source_.addMarketOrder(ownerOf(side), side, 10).trades.empty());
+        expectLogicErrorOnly([&] { this->source_.addMarketOrder(ownerOf(side), side, 10); });
+
+    expectEmptyBook(this->source_);
 }
 
 TYPED_TEST(MovedBookTest, Source_CancelOrder_HasNoEffect) {
