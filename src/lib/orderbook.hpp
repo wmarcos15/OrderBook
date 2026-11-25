@@ -4,6 +4,7 @@
 #include "order.hpp" // so that I can later just import oderbook.hpp into main (less overhead)
 #include "pool.hpp"
 #include "order_queue.hpp"
+#include "order_table.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -42,7 +43,7 @@ private:
 
     std::map<Price, detail::OrderQueue, std::greater<Price>> bids_;
     std::map<Price, detail::OrderQueue, std::less<Price>> asks_;
-    std::unordered_map<OrderID, detail::OrderNode*> orders_;
+    detail::OrderTable<> orders_;
 
     std::unordered_map<Price, LevelData> bidsData_;
     std::unordered_map<Price, LevelData> asksData_;
@@ -52,8 +53,8 @@ private:
     bool match(Order& incoming, OrderResult& result);
     bool canFullyFill(const Order& order, OrderResult& result) const;
 
-    using OrderIterator = std::unordered_map<OrderID, detail::OrderNode*>::iterator;
-    OrderIterator findOrder(OrderID id);
+    // Takes a resting order out of the book. The node is dead after this.
+    void removeNode(detail::OrderNode* node);
 
     std::unordered_map<OwnerID, SelfTradePolicy> policies_;
 
@@ -71,8 +72,8 @@ private:
                 return false;
             }
 
-            OrderID restingID = resting->order.getID();
-            cancelOrder(restingID);
+            OrderID restingID = resting->order.getID();   // read before the slot is released
+            removeNode(resting);
             result.status = OrderStatus::selfTradeCancelledOldest;
             result.cancelledOrders.push_back(restingID);
             return true;

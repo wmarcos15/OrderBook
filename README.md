@@ -7,29 +7,27 @@ GoogleTest suite (250+ tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
-| Operation | v2.0.0 engine | With the order pool | Change |
+| Operation | v2.1.0 engine | With the order table | Change |
 |---|---|---|---|
-| `addOrder` (crossing two-sided flow, includes matching) | 140.0 ns | **99.2 ns** | −29% |
-| `cancelOrder` — order exists | 43.1 ns | **20.9 ns** | −52% |
-| `cancelOrder` — order does not exist | 1.9 ns | **1.9 ns** | 0% |
-| `modifyOrder` — quantity reduced in place | 10.8 ns | **8.3 ns** | −23% |
-| `modifyOrder` — price changed (cancel + re-add) | 81.4 ns | **47.2 ns** | −42% |
-| Crossing order — each extra price level swept | +97 ns | **+72 ns** | −26% |
-| Crossing order — each extra resting order filled | +61 ns | **+36 ns** | −41% |
+| `addOrder` (crossing two-sided flow, includes matching) | 105.1 ns | **73.2 ns** | −30% |
+| `cancelOrder` — order exists, cancelled in ID order | 23.3 ns | **5.7 ns** | −75% |
+| `cancelOrder` — order exists, cancelled in random order | 231.4 ns | **61.3 ns** | −74% |
+| `cancelOrder` — order does not exist | 2.0 ns | **1.2 ns** | −40% |
+| `modifyOrder` — quantity reduced in place | 8.6 ns | **6.7 ns** | −22% |
+| `modifyOrder` — price changed (cancel + re-add) | 48.7 ns | **23.8 ns** | −51% |
+| Crossing order — each extra price level swept | +74 ns | **+57 ns** | −23% |
+| Crossing order — each extra resting order filled | +37 ns | **+20 ns** | −45% |
 
 Single-threaded, Apple M2 Max, Release build. Both columns were measured back
-to back on 2026-11-24, the first on the v2.0.0 engine (`std::map` levels,
-`std::shared_ptr` orders, `std::list` queues) and the second on the current
-one, where orders live in a pool and are linked into their levels
-intrusively. They are lower than the 155.5 ns baseline recorded in
-November's [v2.0.0 section](#results-v200-baseline) because the machine
-differs from day to day, not because the code does; only numbers from the
-same session compare. [Benchmarks](#benchmarks) has the method, the
-matching-cost curves and a breakdown of where the time goes.
+to back on 2026-11-25, the first on the v2.1.0 engine, which finds orders
+through a hash map, and the second on the current one, where an order's ID
+says where its pointer is. The step before this one, the
+[order pool](#results-the-order-pool-and-intrusive-queues), had already taken
+29% off `addOrder` and 52% off `cancelOrder`; it was measured on another day,
+and only numbers from the same session compare. [Benchmarks](#benchmarks) has
+the method, the matching-cost curves and a breakdown of where the time goes.
 
 ![Benchmark results](benchmarks/benchmark_plot.png)
-
-![The v2.0.0 engine against the order pool](benchmarks/comparison_v2_pool_plot.png)
 
 ---
 
@@ -73,12 +71,12 @@ matching-cost curves and a breakdown of where the time goes.
 - **Depth snapshot.** `getDepth` returns the top N levels of a side in one
   call, best level first, each with its price, total quantity and order
   count.
-- **250+ unit tests** across four suites: book state (resting, level data,
+- **250+ unit tests** across five suites: book state (resting, level data,
   cancel, modify, argument validation, book configuration, owners, depth
   snapshot, copy and move), matching semantics (GTC partial/full fills and
   sweeps, time priority, trade contents and owners, IOC, FOK, market orders,
-  self-trade prevention), and the two internal structures the book is built
-  on, the order pool and the intrusive queue.
+  self-trade prevention), and the three internal structures the book is built
+  on: the order pool, the intrusive queue and the order table.
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -241,7 +239,7 @@ detail::Pool<detail::OrderNode> pool_;                            // every resti
 
 std::map<Price, detail::OrderQueue, std::greater<Price>> bids_;   // OrderQueue = { head, tail }
 std::map<Price, detail::OrderQueue, std::less<Price>>    asks_;
-std::unordered_map<OrderID, detail::OrderNode*>          orders_;
+detail::OrderTable<>                                     orders_;   // ID -> OrderNode*
 std::unordered_map<Price, LevelData>                     bidsData_; // { qty, count } per level
 std::unordered_map<Price, LevelData>                     asksData_;
 
@@ -278,13 +276,22 @@ nothing, it threads through nodes that live in the pool. Pushing at the back,
 popping the front and unlinking from the middle are a few pointer writes
 each.
 
-`orders_` maps an ID to its node. Both `std::map` and `std::unordered_map`
-guarantee that an element's address is stable until that element is erased,
-and a level is only erased once its last order leaves it, so the node's
-`level` and `levelData` pointers are valid for exactly as long as the node
-exists. The result is that `cancelOrder` never looks anything up by price —
-it goes from the ID to the node, unlinks it through its own neighbours, and
-gives the slot back.
+**The order table.** `orders_` maps an ID to its node. The book hands out IDs
+in sequence, so there is nothing to hash: the table is a list of pages of 4096
+pointers, `id / 4096` says which page and `id % 4096` which slot in it. Both
+compile to one shift and one mask. An order that is gone leaves a null in its
+slot, and since an ID is never used twice, looking it up finds nothing from
+then on. What is reused is the memory: every page has a count of its live
+orders, and when it reaches zero the page goes to a pile of spare ones,
+already all null, for a later range of IDs to take. Adding an order therefore allocates nothing for
+its lookup, except for a new page when the pile is empty.
+
+Both `std::map` and `std::unordered_map` guarantee that an element's address
+is stable until that element is erased, and a level is only erased once its
+last order leaves it, so the node's `level` and `levelData` pointers are valid
+for exactly as long as the node exists. The result is that `cancelOrder` never
+looks anything up by price — it goes from the ID to the node, unlinks it
+through its own neighbours, and gives the slot back.
 
 **Lifetimes are managed by hand.** The book owns an order from the moment it
 rests until it is filled or cancelled, and ownership is never shared, so
@@ -308,8 +315,8 @@ live level.
 Before filling, each iteration compares the two owners. That one integer
 comparison is all a normal match pays for self-trade prevention; the policy
 lookup only happens on an actual self-match. `cancelNewest` ends the loop,
-and `cancelOldest` cancels the resting order through `cancelOrder` and lets
-the loop read `begin()` again.
+and `cancelOldest` removes the resting order, without looking it up again,
+and lets the loop read `begin()` again.
 
 ### Complexity
 
@@ -320,14 +327,15 @@ small no matter how deep the book gets.
 | Operation | Complexity | Notes |
 |---|---|---|
 | `addOrder` | O(log L) + matching | `std::map` insert; each match iteration is O(1) |
-| `cancelOrder` | O(1) | hash lookup, unlink through the node's own links, aggregate update via stored pointer |
+| `cancelOrder` | O(1) | table lookup, unlink through the node's own links, aggregate update via stored pointer |
 | `cancelOrder`, level becomes empty | O(log L) | the emptied level is erased from the map by price; rare |
-| `modifyOrder` (qty down) | O(1) | hash lookup, `fill()`, aggregate update via stored pointer |
+| `modifyOrder` (qty down) | O(1) | table lookup, `fill()`, aggregate update via stored pointer |
 | `modifyOrder` (otherwise) | cancel + add | |
 | `canFullyFill` (FOK check) | O(orders in price range) | walks single orders, because what counts depends on who owns each one |
 | `getLevelQuantity` / `getLevelCount` | O(1) | hash lookup |
 | `getDepth` | O(levels returned) | walks the map from `begin()` and reads each level's aggregates; never walks the orders |
 | `getBestBid` / `getBestAsk` | O(1) | `begin()` |
+| `getOrder` | O(1) | table lookup |
 
 The first version of `cancelOrder` was O(log L): the list erase was O(1)
 through the stored iterator, but reaching the list went through
@@ -372,16 +380,27 @@ fixed capacity, as many production engines use, would remove even the
 chunk allocations, but it would give `addOrder` a way to fail ("book full")
 that the API does not have.
 
-**One cache line per order.** An `OrderNode` is the 32-byte order, two links
-and two level pointers: 64 bytes. The `orders_` entry shrank from 40 bytes to
-one pointer. Moving the two level pointers from the hash entry into the node
-costs nothing at cancel time (it reads the node anyway) and removes 32 bytes
-from the one structure that grows with the number of orders.
+**A paged table, not a hash map or one flat array.** A hash map works for any
+key, and pays for it on every operation: a hash, a search through a bucket and
+a node allocated per order. Sequential IDs need none of that. One flat array
+indexed by ID would be simpler still, but it keeps 8 bytes for every order
+ever placed, and growing it copies everything. Pages keep the direct lookup
+and give their memory back for reuse once every order in them is gone. The
+price is that one old order keeps its whole page, 32 KB, in use. The list of
+pages itself only grows, by 16 bytes for every 4096 IDs, which is about 4 MB
+after a billion orders. And like the pool, the table keeps the pages it has
+until the book is destroyed.
 
-**Allocations per resting order.** One: the `orders_` hash node. The order
-and its place in the queue come from the pool. A new price level still adds a
-map node and a `LevelData` node, and an order that trades still allocates the
-`trades` vector in its `OrderResult`.
+**One cache line per order.** An `OrderNode` is the 32-byte order, two links
+and two level pointers: 64 bytes. The `orders_` entry is one pointer. Keeping
+the two level pointers in the node and not in that entry costs nothing at
+cancel time, which reads the node anyway.
+
+**Allocations per resting order.** None, normally: the order and its place in
+the queue come from the pool, and its lookup entry from the order table, which
+both allocate only when they need another chunk or page. A new price level
+still adds a map node and a `LevelData` node, and an order that trades still
+allocates the `trades` vector in its `OrderResult`.
 
 ---
 
@@ -417,12 +436,12 @@ inlining and optimisation and produces numbers unrelated to real behaviour.
 To regenerate the charts from a fresh run:
 
 ```bash
-./build/benchmarks/orderbook_benchmark --benchmark_format=json > benchmarks/results_v2-pool.json
+./build/benchmarks/orderbook_benchmark --benchmark_format=json > benchmarks/results_v2-table.json
 
 cd benchmarks
 python3 -m venv .venv && source .venv/bin/activate   # first time only
 pip install -r requirements.txt
-python3 plot.py results_v2-pool.json                  # writes benchmark_plot.png and matching_curves_plot.png
+python3 plot.py results_v2-table.json                 # writes benchmark_plot.png and matching_curves_plot.png
 ```
 
 `plot.py` takes the results file and the two output paths as optional
@@ -477,7 +496,8 @@ chooses the iteration count itself unless the scenario pins it.
 |---|---|---|
 | `BM_AddOrder` | Empty book | Replays a 1 M-order two-sided [workload](#workload) in order; wraps around when exhausted. Orders cross, so the cost **includes matching**. |
 | `BM_CancelOrderHit` | ~1.9 M GTC buys across 21 price levels (the 2 M-order workload with market orders skipped) | Cancels IDs `1, 2, 3, …` in sequence. 100 k iterations pinned, so the pool is never exhausted. |
-| `BM_CancelOrderMiss` | Empty book | Cancels IDs that were never issued — a single failed hash lookup. |
+| `BM_CancelOrderShuffled` | Same | Cancels the same orders' IDs in a random order, from a fixed seed, so each cancel lands somewhere else in memory. 100 k iterations pinned. |
+| `BM_CancelOrderMiss` | Empty book | Cancels IDs that were never issued — a single failed lookup. |
 | `BM_ModifyOrder_Friendly` | 2 M GTC buys, all at one price, qty 100 | Reduces each order to qty 50 at the same price. 100 k iterations pinned. |
 | `BM_ModifyOrder_Unfriendly` | Same | Moves each order one tick down at the same qty — internally cancel + add. 100 k iterations pinned. |
 | `BM_MatchOrder_Sweep` | 128 k resting asks in a ladder of consecutive prices, the same number at every level | One buy that sweeps exactly the next *n* levels and fills every order in them. 13 points: 1 to 64 levels holding one order each, and 1 to 64 orders at a single level. Iterations pinned so that each repetition uses up the ladder exactly. |
@@ -516,24 +536,24 @@ error if the book is not empty afterwards.
 
 | Levels swept, one order each | Median | Orders filled, one level | Median |
 |---|---|---|---|
-| 1 | 92.4 ns | 1 | 92.4 ns |
-| 2 | 175.0 ns | 2 | 144.2 ns |
-| 4 | 335.8 ns | 4 | 227.0 ns |
-| 8 | 634.1 ns | 8 | 405.5 ns |
-| 16 | 1 216.5 ns | 16 | 690.1 ns |
-| 32 | 2 356.7 ns | 32 | 1 274.7 ns |
-| 64 | 4 608.1 ns | 64 | 2 352.2 ns |
+| 1 | 81.1 ns | 1 | 81.1 ns |
+| 2 | 150.3 ns | 2 | 117.3 ns |
+| 4 | 267.7 ns | 4 | 168.8 ns |
+| 8 | 511.7 ns | 8 | 266.0 ns |
+| 16 | 971.8 ns | 16 | 440.6 ns |
+| 32 | 1 873.9 ns | 32 | 754.2 ns |
+| 64 | 3 670.0 ns | 64 | 1 366.2 ns |
 
-These are the current engine's curves, with the order pool. Both are straight
-lines: about **72 ns for each extra level** and **36 ns for each extra
-order**. Sweeping a level that holds one order means filling that order and
-then removing the level, so the difference between the two slopes, roughly
-36 ns, is the price of removing a level: one node erased from the `std::map`
-and one from the level-totals hash map. The 36 ns per order covers unlinking
-the node, erasing the `orders_` entry, returning the slot to the pool and
-appending a trade. On the v2.0.0 engine, run the same day, the slopes were
-97 and 61 ns: the pool made each order cheaper and left the price of removing
-a level where it was.
+These are the current engine's curves, with the order table. Both are close
+to straight lines: about **57 ns for each extra level** and **20 ns for each
+extra order**. Sweeping a level that holds one order means filling that order
+and then removing the level, so the difference between the two slopes, roughly
+37 ns, is the price of removing a level: one node erased from the `std::map`
+and one from the level-totals hash map. The 20 ns per order covers unlinking
+the node, clearing its slot in the order table, returning the node to the pool
+and appending a trade. On the v2.1.0 engine, run the same day, the slopes were
+74 and 37 ns: the table made each order cheaper and left the price of removing
+a level where it was, as the pool had done before it.
 
 Two limits of the method. A ladder of 128 000 price levels is not a
 realistic book; it is that long only so that it never runs out. And every
@@ -545,8 +565,8 @@ engines run through the same benchmark, which is what the curves are for.
 ### Environment
 
 All runs were made on the same machine with the same build configuration.
-The two September runs were made the same day, and the two November runs two
-minutes apart.
+The two September runs were made the same day, and each pair of November runs
+within two minutes of each other.
 
 | Field | Value |
 |---|---|
@@ -565,6 +585,8 @@ minutes apart.
 | v1.0.0 re-run | 2026-11-16 01:27, load avg 3.20, code at `v1.0.0` — [`results_v1-rerun.json`](benchmarks/results_v1-rerun.json) |
 | v2.0.0 engine, for the pool comparison | 2026-11-24 12:27, load avg 3.13, code at `dcde386` — [`results_v2-map-rerun.json`](benchmarks/results_v2-map-rerun.json) |
 | Pool run | 2026-11-24 12:28, load avg 2.50, code at `aafcef5` — [`results_v2-pool.json`](benchmarks/results_v2-pool.json) |
+| v2.1.0 engine, for the table comparison | 2026-11-25 04:41, load avg 2.51, code at `e8c4ff9` — [`results_v2-pool-rerun.json`](benchmarks/results_v2-pool-rerun.json) |
+| Table run | 2026-11-25 04:41, load avg 2.33, code at `1ad5f28` — [`results_v2-table.json`](benchmarks/results_v2-table.json) |
 
 Google Benchmark prints two warnings on this platform, neither of which
 affects the timings. It cannot read `hw.cpufrequency` on Apple Silicon (cores
@@ -743,6 +765,50 @@ locality compared with a book that has been running for hours. The profile
 script had to learn the new types to compare the two fairly: it recognised
 the `orders_` map by the name of its old value type, so on the first run of
 the new code that work was counted as "book logic".
+
+### Results: the paged order table
+
+The second engine change, and the step the pool's profile pointed to: the
+`orders_` hash map is replaced by the paged table described under
+[Design](#core-data-structures). Nothing about the API or the behaviour
+changed, and no existing test was edited.
+
+The v2.1.0 engine and the new one were built next to each other and the full
+suite was run on each, back to back, three times in turn. The table shows the
+first pair. The other runs agreed with it within 3%, except for the in-order
+cancel on the old engine, which moved by up to 6%.
+
+| Operation | v2.1.0 engine | With the table | Change | CV (table) |
+|---|---|---|---|---|
+| `addOrder` | 105.1 ns | **73.2 ns** | −30.4% | 0.57% |
+| `cancelOrder` (hit) | 23.3 ns | **5.7 ns** | −75.4% | 4.35% |
+| `cancelOrder` (shuffled) | 231.4 ns | **61.3 ns** | −73.5% | 2.23% |
+| `cancelOrder` (miss) | 1.97 ns | **1.18 ns** | −39.9% | 0.57% |
+| `modifyOrder` (friendly) | 8.6 ns | **6.7 ns** | −21.6% | 3.05% |
+| `modifyOrder` (unfriendly) | 48.7 ns | **23.8 ns** | −51.2% | 2.28% |
+| Each extra level swept | +74.0 ns | **+56.8 ns** | −23.2% | |
+| Each extra order filled | +37.0 ns | **+20.2 ns** | −45.4% | |
+
+**The shuffled cancel is the one to read.** Cancelling in ID order is the best
+case for this table, because consecutive IDs sit in consecutive slots, and
+also for the pool, whose nodes were handed out in the same order. Real cancels
+do not arrive that way, so `BM_CancelOrderShuffled` was added before the
+change and run on both sides. It costs about ten times as much as the in-order
+cancel on either engine, and the table takes off about the same share of
+both.
+
+It is also the least repeatable number here. An earlier set of runs, a few
+minutes before and otherwise within 6% of these, measured 210 ns before and
+46 ns after, with a spread of 12% between the repetitions of the new engine.
+The later runs, with a spread of about 2%, are the ones reported, and they
+give the smaller gain. Why the first ones were faster was not established.
+
+The miss is no longer a control, as it was for the pool: it is a lookup, and
+the lookup is what changed. In this benchmark the book is empty, so the new
+one compares the ID with the size of an empty list and returns.
+
+The profile has not been repeated for this step. It will be, together with a
+comparison chart, once the price levels have been replaced as well.
 
 ### Results: the O(1) `cancelOrder` change (September)
 
@@ -958,13 +1024,15 @@ OrderBook/
 │       ├── orderbook.hpp / .cpp
 │       ├── pool.hpp            # detail::Pool: chunked slot pool with ASan poisoning (header only)
 │       ├── order_queue.hpp     # detail::OrderNode, OrderQueue, LevelData: the intrusive level queue (header only)
+│       ├── order_table.hpp     # detail::OrderTable: finds an order by its ID, in pages (header only)
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
 │   ├── orderbook_test.cpp      # book state: rest, level data, cancel, modify, validation, config, depth
 │   ├── matching_test.cpp       # GTC / IOC / FOK / market matching semantics, self-trade prevention
 │   ├── pool_test.cpp           # the pool: reuse order, growth, address stability, move
-│   └── order_queue_test.cpp    # the queue: push, pop, unlink at every position, relinking
+│   ├── order_queue_test.cpp    # the queue: push, pop, unlink at every position, relinking
+│   └── order_table_test.cpp    # the table: lookup, page edges, page reuse, growth, move
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark, orderbook_profile
     ├── workload.hpp / .cpp     # seeded synthetic order flow
@@ -980,6 +1048,8 @@ OrderBook/
     ├── results_v1-rerun.json   # v1.0.0 re-run next to the v2.0.0 baseline
     ├── results_v2-pool.json    # the order pool and intrusive queues
     ├── results_v2-map-rerun.json # the v2.0.0 engine re-run next to the pool run
+    ├── results_v2-table.json   # the paged order table
+    ├── results_v2-pool-rerun.json # the v2.1.0 engine re-run next to the table run
     ├── results.json            # September, after the O(1) cancelOrder change
     ├── results_4b4fa81.json    # September, before it
     ├── plot.py                 # one results file → benchmark_plot.png, matching_curves_plot.png
@@ -995,10 +1065,6 @@ OrderBook/
 
 ## Future work
 
-- **Lookup by order ID.** The `orders_` hash map is now the largest single
-  structure in `addOrder` and `cancelOrder`. IDs are sequential, so a plain array indexed
-  by ID could replace it, with the open question of what to do with the slots
-  of orders long gone.
 - **One structure per level.** Fold the price map and `LevelData` into one
   array of levels indexed by price, with a bitmap of the non-empty ones, so a
   level is a single slot, the two parallel `unordered_map`s go away, and

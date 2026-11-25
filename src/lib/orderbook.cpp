@@ -29,12 +29,9 @@ OrderBook::OrderBook(BookConfig config) : config_(config) {
             "); set minPrice and maxPrice to multiples of the tick");
 }
 
-OrderBook::OrderIterator OrderBook::findOrder(OrderID id) {
-    return orders_.find(id);
-}
-
+// The live slots of the pool are exactly the resting orders
 std::size_t OrderBook::size() const {
-    return orders_.size();
+    return pool_.size();
 }
 
 const Order* OrderBook::getBestBid() const {
@@ -48,7 +45,7 @@ const Order* OrderBook::getBestAsk() const {
 }
 
 bool OrderBook::empty() const {
-    return orders_.empty();
+    return pool_.size() == 0;
 }
 
 Quantity OrderBook::getLevelQuantity(Side side, Price price) const {
@@ -69,9 +66,9 @@ std::vector<LevelView> OrderBook::getDepth(Side side, std::size_t levels) const 
 }
 
 const Order* OrderBook::getOrder(OrderID id) const {
-    auto it = orders_.find(id);
-    if (it == orders_.end()) return nullptr;
-    return &it->second->order;
+    const detail::OrderNode* node = orders_.find(id);
+    if (node == nullptr) return nullptr;
+    return &node->order;
 }
 
 const BookConfig& OrderBook::getBookConfig() const {
@@ -147,7 +144,7 @@ OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price 
         queue.pushBack(node);
         level.count_++;
         level.qty_ += incoming.getRemainingQuantity();
-        orders_[id] = node;
+        orders_.insert(id, node);
     }
 
     return result;
@@ -169,11 +166,8 @@ OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
     return addOrder(owner, OrderType::IOC, side, price, qty);
 }
 
-void OrderBook::cancelOrder(OrderID orderID) {
-    auto it = findOrder(orderID);
-    if (it == orders_.end()) return;
-
-    detail::OrderNode* node = it->second;
+void OrderBook::removeNode(detail::OrderNode* node) {
+    OrderID orderID = node->order.getID();
     Side side = node->order.getSide();
     Price price = node->order.getPrice();
     Quantity remainingQty = node->order.getRemainingQuantity();
@@ -201,11 +195,17 @@ void OrderBook::cancelOrder(OrderID orderID) {
     pool_.release(node);   // last: nothing reads the node after this
 }
 
-std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPrice, Quantity newQty) {
-    auto it = findOrder(orderID);
-    if (it == orders_.end()) return std::nullopt;
+void OrderBook::cancelOrder(OrderID orderID) {
+    detail::OrderNode* node = orders_.find(orderID);
+    if (node == nullptr) return;
 
-    detail::OrderNode* node = it->second;
+    removeNode(node);
+}
+
+std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPrice, Quantity newQty) {
+    detail::OrderNode* node = orders_.find(orderID);
+    if (node == nullptr) return std::nullopt;
+
     OwnerID owner = node->order.getOwnerID();
     OrderType type = node->order.getType();
     Side side = node->order.getSide();
@@ -226,7 +226,7 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
         node->levelData->qty_ -= (oldQty - newQty);
         return OrderResult({orderID, {}});
     } else { // Unfriendly
-        cancelOrder(orderID);
+        removeNode(node);
         return addOrder(owner, type, side, newPrice, newQty);
     }
 
