@@ -22,6 +22,7 @@ struct RunCounts {
     std::size_t cancelledNewest {0};
     std::size_t cancelledOldest {0};
     std::size_t rejected {0};
+    std::size_t mostOrders {0};
 };
 
 // Owners 1 to OWNERS, so that some trades would be with themselves
@@ -34,6 +35,8 @@ struct RunConfig {
     Price gapTicks;
     OwnerID owners;
     unsigned seed;
+    // Orders mostly rest away from the other side, so the book fills up
+    bool large {false};
 };
 
 class RandomRun {
@@ -70,7 +73,8 @@ private:
         Price middle = (low + high) / 2;
 
         int roll = anywhere ? 99 : pick(0, 99);
-        if (roll < 70) {
+        int inCluster = config_.large ? 10 : 70;
+        if (roll < inCluster) {
             low = middle - config_.clusterTicks;
             high = middle + config_.clusterTicks;
         } else if (roll < 95) {
@@ -183,7 +187,8 @@ private:
     }
 
     void step() {
-        int roll = pick(0, 999);
+        // A large book gets fewer market orders, cancels and modifies
+        int roll = (config_.large && chance(75)) ? 0 : pick(0, 999);
         if (roll < 550) addOrder();
         else if (roll < 650) addMarketOrder();
         else if (roll < 820) cancelOrder();
@@ -221,6 +226,7 @@ private:
         }
 
         if (book_.empty()) ++counts_.emptyBooks;
+        counts_.mostOrders = std::max(counts_.mostOrders, book_.size());
     }
 
     void checkEveryOrder() {
@@ -245,8 +251,9 @@ public:
         for (std::size_t i {0}; i < STEPS; ++i) {
             SCOPED_TRACE(i);
             step();
-            checkState();
-            if (i % 100 == 0) checkEveryOrder();
+            // The reference goes through all its orders, so a large one is checked less often
+            if (!config_.large || i % 50 == 0) checkState();
+            if (i % (config_.large ? 1'000 : 100) == 0) checkEveryOrder();
             if (::testing::Test::HasFatalFailure()) return;
         }
     }
@@ -296,4 +303,27 @@ TEST(RandomTest, FewOwnersThatSelfTrade_MatchesTheReference) {
     EXPECT_GT(run.counts().killedOrders, 50u);
     EXPECT_GT(run.counts().cancelledNewest, 200u);
     EXPECT_GT(run.counts().cancelledOldest, 200u);
+}
+
+// Past the 4096 orders of a chunk of the pool, and several orders at each price
+TEST(RandomTest, LargeBook_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 2'000}, 15, 20, 0, 4096, true});
+
+    run.run();
+
+    EXPECT_GT(run.counts().mostOrders, 5'000u);
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+    EXPECT_GT(run.counts().killedOrders, 5u);
+}
+
+TEST(RandomTest, LargeBookWithSelfTrades_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 2'000}, 15, 20, OWNERS, 8192, true});
+
+    run.run();
+
+    EXPECT_GT(run.counts().mostOrders, 5'000u);
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().cancelledNewest, 10u);
+    EXPECT_GT(run.counts().cancelledOldest, 10u);
 }
