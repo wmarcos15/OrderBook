@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include "orderbook.hpp"
 #include "test_utils.hpp"
 #include "types.hpp"
@@ -16,6 +17,15 @@ static BookConfig tick5Config() {
 static void expectRejected(const BookConfig& config) {
     EXPECT_THROW(OrderBook {config}, std::invalid_argument)
         << "tick " << config.tickSize << ", band " << config.minPrice << " to " << config.maxPrice;
+}
+
+static void expectRejectedWith(const BookConfig& config, const std::string& message) {
+    try {
+        OrderBook book(config);
+        ADD_FAILURE() << "accepted, expected: " << message;
+    } catch (const std::invalid_argument& error) {
+        EXPECT_EQ(error.what(), message);
+    }
 }
 
 // --------------------------
@@ -49,14 +59,8 @@ TEST(BookConfigTest, Constructor_OnePriceBand_Accepted) {
 
 // With the band on the tick, so that only the check of the tick can reject it
 TEST(BookConfigTest, Constructor_TickNotPositive_ThrowsBecauseOfTheTick) {
-    for (Price tick : {0, -1, -5}) {
-        try {
-            OrderBook book(BookConfig {.tickSize = tick, .minPrice = 5, .maxPrice = 1'000});
-            ADD_FAILURE() << "tick " << tick << " was accepted";
-        } catch (const std::invalid_argument& error) {
-            EXPECT_STREQ(error.what(), "tickSize must be greater than 0") << "tick " << tick;
-        }
-    }
+    for (Price tick : {0, -1, -5})
+        expectRejectedWith({.tickSize = tick, .minPrice = 5, .maxPrice = 1'000}, "tickSize must be greater than 0");
 }
 
 TEST(BookConfigTest, Constructor_MinPriceNotPositive_Throws) {
@@ -69,9 +73,11 @@ TEST(BookConfigTest, Constructor_MinPriceAboveMaxPrice_Throws) {
     expectRejected({.minPrice = 101, .maxPrice = 100});
 }
 
-TEST(BookConfigTest, Constructor_BandNotOnTick_Throws) {
-    expectRejected({.tickSize = 5, .minPrice = 7, .maxPrice = 1'000});
-    expectRejected({.tickSize = 5, .minPrice = 5, .maxPrice = 1'003});
+TEST(BookConfigTest, Constructor_BandNotOnTick_ThrowsAndNamesTheEdge) {
+    expectRejectedWith({.tickSize = 5, .minPrice = 7, .maxPrice = 1'000},
+        "minPrice (7) must be a multiple of tickSize (5); set minPrice and maxPrice to multiples of the tick");
+    expectRejectedWith({.tickSize = 5, .minPrice = 5, .maxPrice = 1'003},
+        "maxPrice (1003) must be a multiple of tickSize (5); set minPrice and maxPrice to multiples of the tick");
 }
 
 // The default band starts at 1, so a book with another tick has to set the band too

@@ -240,6 +240,28 @@ TEST_P(AllocationTest, ModifyThatCrosses_Fails_OriginalStaysOnlyIfNothingWasTrad
     EXPECT_GT(gone, 0u);
 }
 
+TEST_P(AllocationTest, ModifyThatCancelsOwnOrders_Fails_OriginalStaysOnlyIfNothingWasCancelled) {
+    OrderID id {0};
+    std::size_t kept {0};
+    std::size_t gone {0};
+    failEachAllocation(
+        [&](OrderBook& book) {
+            book.setSelfTradePolicy(OWNER, SelfTradePolicy::cancelOldest);
+            id = send(book, OrderType::GTC, 90, 60).orderID;
+            for (Price price : {100, 101, 102, 103, 104})
+                book.addOrder(OWNER, OrderType::GTC, other_, at(price), 10);
+        },
+        [&](OrderBook& book) { book.modifyOrder(id, at(104), 60); },
+        [&](const OrderBook& book) {
+            bool untouched = levelsOf(book, other_).size() == 5;
+            EXPECT_EQ(book.getOrder(id) != nullptr, untouched);
+            ++(untouched ? kept : gone);
+        });
+
+    EXPECT_GT(kept, 0u);
+    EXPECT_GT(gone, 0u);
+}
+
 // --------------------------
 // Allocations that are not made
 // --------------------------
