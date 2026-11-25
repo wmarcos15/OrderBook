@@ -20,8 +20,12 @@ measurements to decide what to change.
 
 Single-threaded, Apple M2 Max, Release build. Both columns were measured back
 to back on 2026-11-25, the first on the v2.1.0 engine, which finds orders
-through a hash map, and the second on the current one, where an order's ID
-says where its pointer is. The step before this one, the
+through a hash map, and the second on the engine with the order table, where
+an order's ID says where its pointer is. **The current engine is newer than
+these numbers**: the price levels have moved to a
+[ladder](#core-data-structures) since, and it has not been benchmarked for
+this page yet. That comparison, over every release, is
+[issue #22](https://github.com/wmarcos15/OrderBook/issues/22). The step before this one, the
 [order pool](#results-the-order-pool-and-intrusive-queues), had already taken
 29% off `addOrder` and 52% off `cancelOrder`; it was measured on another day,
 and only numbers from the same session compare. [Benchmarks](#benchmarks) has
@@ -53,8 +57,8 @@ the method, the matching-cost curves and a breakdown of where the time goes.
   discards the rest), `FOK` (fills completely or does nothing), and market
   orders.
 - **Operations:** `addOrder`, `addMarketOrder`, `cancelOrder`, `modifyOrder`.
-  Cancel and in-place quantity reduction are O(1) — no lookup by price,
-  except when a cancel empties its level and the level itself is removed.
+  Cancel and in-place quantity reduction are O(1), with no lookup by price
+  except when a cancel empties its level.
 - **Configurable price grid.** A `BookConfig` sets the tick size and the
   legal price band; prices off the tick or outside the band are rejected
   before anything in the book changes.
@@ -71,12 +75,13 @@ the method, the matching-cost curves and a breakdown of where the time goes.
 - **Depth snapshot.** `getDepth` returns the top N levels of a side in one
   call, best level first, each with its price, total quantity and order
   count.
-- **250+ unit tests** across five suites: book state (resting, level data,
-  cancel, modify, argument validation, book configuration, owners, depth
-  snapshot, copy and move), matching semantics (GTC partial/full fills and
-  sweeps, time priority, trade contents and owners, IOC, FOK, market orders,
-  self-trade prevention), and the three internal structures the book is built
-  on: the order pool, the intrusive queue and the order table.
+- **250+ unit tests**: book state (resting, level data, cancel, modify,
+  argument validation, book configuration, owners, depth snapshot, copy and
+  move), matching semantics (GTC partial/full fills and sweeps, time priority,
+  trade contents and owners, IOC, FOK, market orders, self-trade prevention),
+  random runs against a simple reference book, and the internal structures the
+  book is built on: the order pool, the intrusive queue, the order table, the
+  bitmap, the side index and the price ladder.
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -186,14 +191,15 @@ Semantics worth knowing:
 - An `OrderBook` cannot be copied, only moved. Its internal entries point
   into its own price levels, so a copy would share state with the original;
   copying is a compile error rather than a silent bug. Pass a book by
-  reference, or `std::move` it.
+  reference, or `std::move` it. A book that has been moved from is empty, and
+  `addOrder` on it throws `std::logic_error`.
 - The `OrderBook` constructor throws `std::invalid_argument` if the config is
   inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
   `maxPrice`, or either band edge not a multiple of `tickSize`. `modifyOrder` returns `std::nullopt` for an unknown ID.
   `cancelOrder` on an unknown ID is a silent no-op.
-- A market order is converted internally to an `IOC` limit order at the worst
-  price on the opposite side, so it sweeps everything available and discards
-  any residual. Against an empty opposite side it returns an ID and no trades.
+- A market order is converted internally to an `IOC` limit order at the edge
+  of the price band, so it sweeps everything available and discards any
+  residual. Against an empty opposite side it returns an ID and no trades.
 - `FOK` is checked before touching the book, so a rejected FOK leaves the
   book untouched. It still consumes an order ID, which comes back in
   `OrderResult` alongside an empty trade list.
@@ -235,13 +241,15 @@ Semantics worth knowing:
 ### Core data structures
 
 ```cpp
-detail::Pool<detail::OrderNode> pool_;                            // every resting order lives in here
+detail::Pool<detail::OrderNode> pool_;    // every resting order lives in here
 
-std::map<Price, detail::OrderQueue, std::greater<Price>> bids_;   // OrderQueue = { head, tail }
-std::map<Price, detail::OrderQueue, std::less<Price>>    asks_;
-detail::OrderTable<>                                     orders_;   // ID -> OrderNode*
-std::unordered_map<Price, LevelData>                     bidsData_; // { qty, count } per level
-std::unordered_map<Price, LevelData>                     asksData_;
+detail::Ladder                  ladder_;  // one Level per legal price
+detail::OrderTable<>            orders_;  // ID -> OrderNode*
+
+struct Level {                // everything about one price, 24 bytes
+    OrderQueue queue;         // { head, tail }
+    LevelData  data;          // { qty, count }
+};
 
 struct OrderNode {            // one pool slot, 64 bytes: one cache line
     Order       order;
@@ -252,11 +260,20 @@ struct OrderNode {            // one pool slot, 64 bytes: one cache line
 };
 ```
 
-`bids_` and `asks_` are ordered by price with the best price at `begin()`,
-which is all matching ever looks at. Each level is a FIFO queue, so time
-priority is queue order. `bidsData_` / `asksData_` keep running quantity and
-order count per level, updated on every add, fill, cancel and modify; that is
-what makes depth queries O(1) rather than a walk over the level.
+**The price ladder.** `BookConfig` fixes the legal prices, so the ladder is an
+array with one `Level` for each of them, and `(price - minPrice) / tickSize` is
+its position. Nothing is searched, and a price that starts or stops being used
+allocates and frees nothing. Both sides share the array, since a price never
+holds buys and sells at once: they would have traded. Each level is a FIFO
+queue, so time priority is queue order, and its totals are updated on every
+add, fill, cancel and modify, which is what makes the level queries O(1).
+
+Each side has a bitmap that says at which positions it has orders, and
+remembers its best one. When the best level empties, the next one is the next
+bit that is on, found 64 positions at a time. A second, smaller bitmap says
+which 64-bit words are not zero, so a long gap is jumped instead of walked.
+Both bitmaps are updated only when a level gets its first order or loses its
+last one.
 
 **The pool.** A resting order is one `OrderNode` in a `Pool`. The pool asks
 the system for memory in chunks of 4096 slots, rarely, and hands the slots out
@@ -286,12 +303,11 @@ orders, and when it reaches zero the page goes to a pile of spare ones,
 already all null, for a later range of IDs to take. Adding an order therefore allocates nothing for
 its lookup, except for a new page when the pile is empty.
 
-Both `std::map` and `std::unordered_map` guarantee that an element's address
-is stable until that element is erased, and a level is only erased once its
-last order leaves it, so the node's `level` and `levelData` pointers are valid
-for exactly as long as the node exists. The result is that `cancelOrder` never
-looks anything up by price — it goes from the ID to the node, unlinks it
-through its own neighbours, and gives the slot back.
+The array of levels never grows, so a level never moves in memory and the
+node's `level` and `levelData` pointers stay valid. The result is that
+`cancelOrder` looks nothing up by price unless the level empties: it goes from
+the ID to the node, unlinks it through its own neighbours, and gives the slot
+back.
 
 **Lifetimes are managed by hand.** The book owns an order from the moment it
 rests until it is filled or cancelled, and ownership is never shared, so
@@ -309,54 +325,45 @@ way.
 opposite side's best level is at or through its limit price. Each iteration
 fills against the front of the best level, records a `Trade{bidID, askID,
 price, quantity, bidOwner, askOwner}` at the resting price, and pops the resting order if it is
-now filled. Empty levels are erased immediately, so `begin()` is always a
-live level.
+now filled. An emptied level leaves its side's bitmap immediately, so the best
+position always has orders. The best level is compared with the limit by
+position, without turning either into a price.
 
 Before filling, each iteration compares the two owners. That one integer
 comparison is all a normal match pays for self-trade prevention; the policy
 lookup only happens on an actual self-match. `cancelNewest` ends the loop,
 and `cancelOldest` removes the resting order, without looking it up again,
-and lets the loop read `begin()` again.
+and lets the loop ask for the best level again.
 
 ### Complexity
 
-*L* is the number of distinct price levels — not the number of orders. A book
-holding millions of orders may span a few dozen levels, so log *L* stays
-small no matter how deep the book gets.
+*W* is the number of 64-bit words in a side's summary bitmap: 25 for the
+default band of 100,000 prices. It only matters when a level empties and the
+next one is far away, and *W* depends on the width of the band, not on the
+number of orders.
 
 | Operation | Complexity | Notes |
 |---|---|---|
-| `addOrder` | O(log L) + matching | `std::map` insert; each match iteration is O(1) |
-| `cancelOrder` | O(1) | table lookup, unlink through the node's own links, aggregate update via stored pointer |
-| `cancelOrder`, level becomes empty | O(log L) | the emptied level is erased from the map by price; rare |
-| `modifyOrder` (qty down) | O(1) | table lookup, `fill()`, aggregate update via stored pointer |
+| `addOrder` | O(1) + matching | the position is computed from the price; each match iteration is O(1) |
+| `cancelOrder` | O(1) | table lookup, unlink through the node's own links, totals update via stored pointer |
+| A level becomes empty | O(W) at worst | finding the next best level; O(1) if it is in the same word |
+| `modifyOrder` (qty down) | O(1) | table lookup, `fill()`, totals update via stored pointer |
 | `modifyOrder` (otherwise) | cancel + add | |
 | `canFullyFill` (FOK check) | O(orders in price range) | walks single orders, because what counts depends on who owns each one |
-| `getLevelQuantity` / `getLevelCount` | O(1) | hash lookup |
-| `getDepth` | O(levels returned) | walks the map from `begin()` and reads each level's aggregates; never walks the orders |
-| `getBestBid` / `getBestAsk` | O(1) | `begin()` |
+| `getLevelQuantity` / `getLevelCount` | O(1) | position from the price, after checking that the side has orders there |
+| `getDepth` | O(levels returned) | walks the side's bitmap from the best position and reads each level's totals; never walks the orders. A long gap costs up to O(W) |
+| `getBestBid` / `getBestAsk` | O(1) | the stored best position |
 | `getOrder` | O(1) | table lookup |
-
-The first version of `cancelOrder` was O(log L): the list erase was O(1)
-through the stored iterator, but reaching the list went through
-`bids_[price]` — a tree descent — and reaching the aggregates went through
-`bidsData_[price]` — a hash lookup. Storing the two pointers removed both.
-The one remaining lookup by price is `bids_.erase(price)` when a level
-drains completely; making that O(1) too would mean storing a map iterator,
-which is awkward because `bids_` and `asks_` are different types (different
-comparators). It is left as is: it fires once per level lifetime, not once
-per cancel.
 
 ### Trade-offs
 
-**`std::map` for price levels, not a flat array.** A production engine would
-index levels into a preallocated array: price becomes an offset, insertion is
-O(1) with no allocation, and adjacent levels share cache lines. That requires
-a bounded, known price range and a fallback for anything outside it.
-`BookConfig` now supplies that range, but `std::map` does not depend on it:
-its cost follows the number of levels in use, not the width of the band. Now that
-cancel and friendly modify no longer touch the map at all, the tree is only
-on the `addOrder` path, where the insert is a small part of the total.
+**An array of levels, not a sorted map.** A `std::map` costs a search for every
+price and an allocation for every new one, and its cost does not depend on how
+wide the band is. The array costs a calculation, but it has a `Level` for every
+legal price whether it is used or not: 24 bytes each, about 2.4 MB for the
+default band and 24 MB for a million prices, taken when the book is created.
+There is no limit on the band, so a very wide one can take gigabytes. The band
+also has to be known in advance, and prices outside it are rejected.
 
 **An intrusive queue within a level.** The requirement is FIFO with O(1)
 removal from the middle — a cancel must not walk the level. A doubly linked
@@ -399,8 +406,8 @@ cancel time, which reads the node anyway.
 **Allocations per resting order.** None, normally: the order and its place in
 the queue come from the pool, and its lookup entry from the order table, which
 both allocate only when they need another chunk or page. A new price level
-still adds a map node and a `LevelData` node, and an order that trades still
-allocates the `trades` vector in its `OrderResult`.
+allocates nothing either. An order that trades still allocates the `trades`
+vector in its `OrderResult`.
 
 ---
 
@@ -544,8 +551,8 @@ error if the book is not empty afterwards.
 | 32 | 1 873.9 ns | 32 | 754.2 ns |
 | 64 | 3 670.0 ns | 64 | 1 366.2 ns |
 
-These are the current engine's curves, with the order table. Both are close
-to straight lines: about **57 ns for each extra level** and **20 ns for each
+These are the curves of the engine with the order table, before the price
+ladder. Both are close to straight lines: about **57 ns for each extra level** and **20 ns for each
 extra order**. Sweeping a level that holds one order means filling that order
 and then removing the level, so the difference between the two slopes, roughly
 37 ns, is the price of removing a level: one node erased from the `std::map`
@@ -1025,6 +1032,9 @@ OrderBook/
 │       ├── pool.hpp            # detail::Pool: chunked slot pool with ASan poisoning (header only)
 │       ├── order_queue.hpp     # detail::OrderNode, OrderQueue, LevelData: the intrusive level queue (header only)
 │       ├── order_table.hpp     # detail::OrderTable: finds an order by its ID, in pages (header only)
+│       ├── bitmap.hpp          # detail::Bitmap: one bit per position, with a summary to skip gaps (header only)
+│       ├── side_index.hpp      # detail::SideIndex: which positions one side uses, and its best (header only)
+│       ├── ladder.hpp          # detail::Level, Ladder: one level per legal price (header only)
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
@@ -1032,7 +1042,12 @@ OrderBook/
 │   ├── matching_test.cpp       # GTC / IOC / FOK / market matching semantics, self-trade prevention
 │   ├── pool_test.cpp           # the pool: reuse order, growth, address stability, move
 │   ├── order_queue_test.cpp    # the queue: push, pop, unlink at every position, relinking
-│   └── order_table_test.cpp    # the table: lookup, page edges, page reuse, growth, move
+│   ├── order_table_test.cpp    # the table: lookup, page edges, page reuse, growth, move
+│   ├── bitmap_test.cpp         # the bitmap: search both ways, word edges, far gaps
+│   ├── side_index_test.cpp     # one side: best, next worse, move
+│   ├── ladder_test.cpp         # the ladder: prices and positions, totals, both sides, move
+│   ├── price_level_test.cpp    # the book's prices: edges, gaps, illegal prices, random runs against a reference
+│   └── moved_book_test.cpp     # a book that has been moved from
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark, orderbook_profile
     ├── workload.hpp / .cpp     # seeded synthetic order flow
@@ -1065,10 +1080,10 @@ OrderBook/
 
 ## Future work
 
-- **One structure per level.** Fold the price map and `LevelData` into one
-  array of levels indexed by price, with a bitmap of the non-empty ones, so a
-  level is a single slot, the two parallel `unordered_map`s go away, and
-  removing a level stops costing a tree erase.
+- **Prices without a band.** The ladder needs to know every legal price in
+  advance. A ring buffer would keep a window of levels around the current
+  price and move it as the price moves, so no price is rejected and a wide
+  range costs no memory.
 - **Tail latency.** Google Benchmark reports aggregates across repetitions,
   not per-call percentiles. A p99 / p99.9 view would need per-iteration
   timing, which is a different harness.
