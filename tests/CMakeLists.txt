@@ -3,6 +3,7 @@ add_executable(orderbook_tests
     matching_test.cpp
     pool_test.cpp
     order_queue_test.cpp
+    order_table_test.cpp
 )
 
 target_link_libraries(orderbook_tests
