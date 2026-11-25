@@ -4,6 +4,7 @@ add_executable(orderbook_tests
     pool_test.cpp
     order_queue_test.cpp
     order_table_test.cpp
+    bitmap_test.cpp
 )
 
 target_link_libraries(orderbook_tests
