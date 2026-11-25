@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace orderbook {
 
@@ -35,6 +36,19 @@ BookConfig OrderBook::validated(const BookConfig& config) {
 OrderBook::OrderBook(BookConfig config)
     : config_(validated(config)),
     ladder_(config_.minPrice, config_.maxPrice, config_.tickSize) {}
+
+// Moving a vector onto itself may empty it, so it is checked here for every member
+OrderBook& OrderBook::operator=(OrderBook&& other) noexcept {
+    if (this != &other) {
+        config_ = other.config_;
+        nextID_ = other.nextID_;
+        pool_ = std::move(other.pool_);
+        ladder_ = std::move(other.ladder_);
+        orders_ = std::move(other.orders_);
+        policies_ = std::move(other.policies_);
+    }
+    return *this;
+}
 
 // The live slots of the pool are exactly the resting orders
 std::size_t OrderBook::size() const {
