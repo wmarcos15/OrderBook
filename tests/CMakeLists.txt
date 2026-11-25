@@ -5,6 +5,7 @@ add_executable(orderbook_tests
     order_queue_test.cpp
     order_table_test.cpp
     bitmap_test.cpp
+    side_index_test.cpp
 )
 
 target_link_libraries(orderbook_tests
