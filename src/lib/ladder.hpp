@@ -127,6 +127,7 @@ public:
 
     // The node stays in its queue, the book removes it when it has no quantity left
     static void fill(OrderNode* node, Quantity quantity) {
+        assert(quantity <= node->order.getRemainingQuantity());
         node->order.fill(quantity);
         node->levelData->qty_ -= quantity;
     }
