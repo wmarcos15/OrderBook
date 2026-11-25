@@ -194,8 +194,9 @@ Semantics worth knowing:
   reference, or `std::move` it. A book that has been moved from is empty, and
   `addOrder` and `addMarketOrder` on it throw `std::logic_error`.
 - If memory runs out, the call throws `std::bad_alloc` and the book stays
-  usable. What the call had already traded stays traded but is not reported;
-  if it had not traded yet, nothing has changed except that an ID is used.
+  usable. What the call had already traded stays traded, and own orders it had
+  cancelled as self-trades stay cancelled, but neither is reported. If it had
+  done neither, nothing has changed except that an ID may have been used.
 - The `OrderBook` constructor throws `std::invalid_argument` if the config is
   inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
   `maxPrice`, or either band edge not a multiple of `tickSize`. `modifyOrder` returns `std::nullopt` for an unknown ID.
