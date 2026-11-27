@@ -1,12 +1,17 @@
 #include <gtest/gtest.h>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <map>
 #include <new>
 #include <optional>
 #include <tuple>
 #include <utility>
+#include "order_queue.hpp"
 #include "orderbook.hpp"
+#include "price_levels.hpp"
+#include "queue_test_utils.hpp"
 #include "test_utils.hpp"
 #include "types.hpp"
 
@@ -280,4 +285,104 @@ TEST_P(AllocationTest, RestCancelAndModify_WithRoomInThePoolAndTable_AllocateNot
     EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 91, 10); }), 0u);
     EXPECT_EQ(allocationsOf([&] { book.modifyOrder(id, at(95), 10); }), 0u);
     EXPECT_EQ(allocationsOf([&] { book.cancelOrder(id + 1); }), 0u);
+}
+
+// --------------------------
+// Moving the window
+// --------------------------
+namespace {
+
+struct LevelState {
+    Side side;
+    Price price;
+    Quantity quantity;
+    Quantity count;
+    std::vector<OrderID> ids;
+
+    bool operator==(const LevelState&) const = default;
+};
+
+using Cursor = detail::PriceLevels::Cursor;
+
+// Every level of both sides, and every order of them must point to the level that holds it
+std::vector<LevelState> stateOf(const detail::PriceLevels& levels) {
+    std::vector<LevelState> state;
+    for (Side side : {Side::buy, Side::sell}) {
+        Cursor cursor = (side == Side::buy) ? levels.best<Side::buy>() : levels.best<Side::sell>();
+        for (; cursor.level != nullptr; cursor = (side == Side::buy) ? levels.after<Side::buy>(cursor) : levels.after<Side::sell>(cursor)) {
+            EXPECT_EQ(cursor.level, levels.levelOf(side, cursor.price)) << "price " << cursor.price;
+            for (const detail::OrderNode* node = cursor.level->queue.head; node != nullptr; node = node->next) {
+                EXPECT_EQ(node->level, &cursor.level->queue) << "order " << node->order.getID();
+                EXPECT_EQ(node->levelData, &cursor.level->data) << "order " << node->order.getID();
+            }
+            state.push_back({side, cursor.price, cursor.level->data.qty_, cursor.level->data.count_, forwardIDs(cursor.level->queue)});
+        }
+    }
+    return state;
+}
+
+// Enough levels leave to need more than one chunk of the pool, so that a failure can come after some are made
+void failEachAllocationOfAMove(Side leaving) {
+    constexpr std::int64_t BASE = 5'000;
+    constexpr std::int64_t SIZE = 512;
+    constexpr std::int64_t DISTANCE = 400;
+    bool isUp = leaving == Side::buy;
+    std::int64_t newBase = isUp ? BASE + DISTANCE : BASE - DISTANCE;
+
+    std::size_t failures {0};
+    for (std::size_t allocation {1}; ; ++allocation) {
+        SCOPED_TRACE(::testing::Message() << "allocation " << allocation);
+        detail::PriceLevels levels(1, 1, 10'000, SIZE);
+        levels.placeWindowAt(BASE);
+        std::deque<detail::OrderNode> nodes;
+        OrderID nextID {1};
+
+        auto rest = [&](Side side, std::int64_t tick) {
+            for (Quantity quantity : {10, 20}) {
+                nodes.emplace_back(Order(nextID++, 1, OrderType::GTC, side, static_cast<Price>(tick), quantity));
+                levels.add(&nodes.back());
+            }
+        };
+        // The ones that stay are on the other side of the window from the ones that leave
+        for (std::int64_t tick {0}; tick < DISTANCE; ++tick)
+            rest(leaving, isUp ? BASE + tick : BASE + SIZE - 1 - tick);
+        for (std::int64_t tick {0}; tick < 5; ++tick)
+            rest(otherSide(leaving), isUp ? BASE + SIZE - 5 + tick : BASE + 4 - tick);
+        rest(leaving, isUp ? 100 : 9'000);
+        std::vector<LevelState> before = stateOf(levels);
+
+        if (!failsAt(allocation, [&] { levels.moveTo(newBase); })) break;
+
+        ++failures;
+        EXPECT_EQ(levels.windowBaseTick(), BASE);
+        EXPECT_EQ(stateOf(levels), before);
+        EXPECT_TRUE(levels.outsideRuleHolds());
+
+        levels.moveTo(newBase);
+        EXPECT_EQ(levels.windowBaseTick(), newBase);
+        EXPECT_EQ(stateOf(levels), before);
+        EXPECT_TRUE(levels.outsideRuleHolds());
+    }
+    EXPECT_GT(failures, 3u);
+}
+
+} // namespace
+
+TEST(MoveAllocationTest, MoveThatPushesBuysOut_Fails_NothingChanges) {
+    failEachAllocationOfAMove(Side::buy);
+}
+
+TEST(MoveAllocationTest, MoveThatPushesSellsOut_Fails_NothingChanges) {
+    failEachAllocationOfAMove(Side::sell);
+}
+
+TEST(MoveAllocationTest, MoveWithNothingToPushOut_AllocatesNothing) {
+    detail::PriceLevels levels(1, 1, 10'000, 64);
+    levels.placeWindowAt(5'000);
+    std::deque<detail::OrderNode> nodes;
+    nodes.emplace_back(Order(1, 1, OrderType::GTC, Side::buy, 5'040, 10));
+    levels.add(&nodes.back());
+
+    EXPECT_EQ(allocationsOf([&] { levels.moveTo(5'020); }), 0u);
+    EXPECT_EQ(allocationsOf([&] { levels.moveTo(4'990); }), 0u);
 }

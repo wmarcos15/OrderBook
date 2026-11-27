@@ -4,6 +4,7 @@
 #include <deque>
 #include <limits>
 #include <map>
+#include <optional>
 #include <random>
 #include <set>
 #include <type_traits>
@@ -1107,4 +1108,581 @@ TEST(PriceLevelsRandomTest, RandomOperations_MatchAModel) {
     // Most of the run happens outside the window
     EXPECT_GT(addedOutside, 3 * addedInside);
     EXPECT_GT(addedInside, 100u);
+}
+
+// --------------------------
+// Moving the window
+// --------------------------
+namespace {
+
+struct LevelState {
+    Side side;
+    Price price;
+    Quantity quantity;
+    Quantity count;
+    IDs ids;
+
+    bool operator==(const LevelState&) const = default;
+};
+
+}
+
+// Every level of both sides, from the best to the worst
+static std::vector<LevelState> stateOf(const PriceLevels& levels) {
+    std::vector<LevelState> state;
+    for (Side side : {Side::buy, Side::sell})
+        for (const Cursor& cursor : walk(levels, side))
+            state.push_back({side, cursor.price, cursor.level->data.qty_, cursor.level->data.count_, forwardIDs(cursor.level->queue)});
+    return state;
+}
+
+static void expectNodesPointToTheirLevels(const PriceLevels& levels) {
+    for (Side side : {Side::buy, Side::sell}) {
+        for (const Cursor& cursor : walk(levels, side)) {
+            EXPECT_EQ(cursor.level, levels.levelOf(side, cursor.price)) << "price " << cursor.price;
+            EXPECT_EQ(backwardIDs(cursor.level->queue).size(), cursor.level->data.count_) << "price " << cursor.price;
+            for (const OrderNode* node = cursor.level->queue.head; node != nullptr; node = node->next) {
+                EXPECT_EQ(node->level, &cursor.level->queue) << "order " << node->order.getID();
+                EXPECT_EQ(node->levelData, &cursor.level->data) << "order " << node->order.getID();
+            }
+        }
+    }
+}
+
+class MovingPriceLevelsTest : public PriceLevelsTest {
+protected:
+    // The window holds the indices from firstIndex on. For the sells that is the lowest price at the end
+    std::int64_t baseTickAt(Price firstIndex) const {
+        return priceAt((side_ == Side::buy) ? firstIndex : firstIndex + SPAN - 1) / TICK;
+    }
+
+    Price tickAt(Price index) const {
+        return priceAt(index) / TICK;
+    }
+
+    Price indexOf(Price price) const {
+        return (side_ == Side::buy) ? (price - MIN_PRICE) / TICK : (MAX_PRICE - price) / TICK;
+    }
+
+    std::size_t positionIn(Price firstIndex, Price index) const {
+        return static_cast<std::size_t>((side_ == Side::buy) ? index - firstIndex : firstIndex + SPAN - 1 - index);
+    }
+
+    // Away from the ends of the band, so the base is the midpoint minus half the window
+    std::int64_t baseAround(Price index, std::optional<Price> otherIndex = std::nullopt) const {
+        std::int64_t centre = tickAt(index);
+        if (otherIndex) centre = (centre + tickAt(*otherIndex)) / 2;
+        return centre - SPAN / 2;
+    }
+
+    // Two orders at each index, so that the queues have an order to keep
+    void rest(Side side, const Prices& indices) {
+        for (Price index : indices) {
+            addNode(side, index, 10);
+            addNode(side, index, 25 + index % 7);
+        }
+    }
+
+    // Which levels are in the window, and where, after it holds the indices from firstIndex on
+    void expectWindowAt(Price firstIndex) const {
+        EXPECT_EQ(levels_.windowBaseTick(), baseTickAt(firstIndex));
+        for (Side side : {Side::buy, Side::sell}) {
+            for (const Cursor& cursor : walk(levels_, side)) {
+                Price index = indexOf(cursor.price);
+                bool isInWindow = index >= firstIndex && index < firstIndex + SPAN;
+                EXPECT_EQ(cursor.position, isInWindow ? positionIn(firstIndex, index) : NONE) << "index " << index;
+            }
+        }
+        EXPECT_TRUE(levels_.outsideRuleHolds());
+    }
+
+    void expectMoveKeepsEverything(Price firstIndex) {
+        std::vector<LevelState> before = stateOf(levels_);
+
+        levels_.moveTo(baseTickAt(firstIndex));
+
+        EXPECT_EQ(stateOf(levels_), before);
+        expectNodesPointToTheirLevels(levels_);
+        expectWindowAt(firstIndex);
+    }
+
+    void expectNoMove(Side side, Price index) {
+        std::vector<LevelState> before = stateOf(levels_);
+
+        levels_.prepareFor(side, priceAt(index));
+
+        EXPECT_EQ(levels_.windowBaseTick(), baseTickAt(FIRST)) << "index " << index;
+        EXPECT_EQ(stateOf(levels_), before);
+    }
+
+    // The window moves, nothing else changes, and the order then rests inside it
+    void expectMoveTo(Side side, Price index, std::int64_t expectedBase) {
+        std::vector<LevelState> before = stateOf(levels_);
+
+        levels_.prepareFor(side, priceAt(index));
+
+        EXPECT_EQ(levels_.windowBaseTick(), expectedBase);
+        EXPECT_EQ(stateOf(levels_), before);
+        expectNodesPointToTheirLevels(levels_);
+        EXPECT_TRUE(levels_.outsideRuleHolds());
+
+        addNode(side, index, 10);
+        EXPECT_NE(levels_.levelOf(side, priceAt(index)), nullptr);
+    }
+};
+
+INSTANTIATE_FOR_BOTH_SIDES(MovingPriceLevelsTest);
+
+// --------------------------
+// Prepare for: when it does not move
+// --------------------------
+TEST_P(MovingPriceLevelsTest, PrepareFor_NotANewBest_DoesNothing) {
+    rest(side_, {FIRST + 3});
+
+    expectNoMove(side_, FIRST);
+    expectNoMove(side_, FIRST + 1);
+    expectNoMove(side_, 100);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NotANewBestAndFarFromTheWindow_DoesNothing) {
+    rest(side_, {100});
+
+    expectNoMove(side_, 50);
+    expectNoMove(side_, 0);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestInsideAndAwayFromTheEdges_DoesNothing) {
+    for (Price index {FIRST + 1}; index < FIRST + SPAN - 1; ++index)
+        expectNoMove(side_, index);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestInsideAndAwayFromTheEdges_DoesNothingWithOrdersAround) {
+    rest(side_, {100, FIRST - 2});
+    rest(other_, {FIRST + SPAN + 2, 7'000});
+
+    for (Price index {FIRST + 1}; index < FIRST + SPAN - 1; ++index)
+        expectNoMove(side_, index);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_WindowSizedToTheBand_DoesNothing) {
+    // 8 prices in a window of 8, and then 5 in a window that is rounded up
+    for (Price last : {MIN_PRICE + 7 * TICK, MIN_PRICE + 4 * TICK}) {
+        PriceLevels levels(TICK, MIN_PRICE, last, SIZE);
+        std::int64_t base = levels.windowBaseTick();
+        Price first = (side_ == Side::buy) ? MIN_PRICE : last;
+        Price step = (side_ == Side::buy) ? TICK : -TICK;
+
+        for (Price price = first; price >= MIN_PRICE && price <= last; price += step) {
+            levels.prepareFor(side_, price);
+            EXPECT_EQ(levels.windowBaseTick(), base) << "price " << price;
+        }
+    }
+}
+
+// --------------------------
+// Prepare for: when it moves
+// --------------------------
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestOutsideTheWindow_MovesAroundIt) {
+    expectMoveTo(side_, 100, baseAround(100));
+    EXPECT_NE(bestAt(levels_, side_).position, NONE);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestOutsideTheWindowAbove_MovesAroundIt) {
+    rest(other_, {7'000});
+
+    expectMoveTo(side_, FIRST + 20, baseAround(FIRST + 20, 7'000));
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestOutsideTheWindowBelow_MovesBetweenItAndTheOtherSide) {
+    rest(side_, {FIRST - 40});
+    rest(other_, {FIRST + 30});
+
+    expectMoveTo(side_, FIRST - 20, baseAround(FIRST - 20, FIRST + 30));
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestAtTheLowEdge_Moves) {
+    rest(side_, {FIRST - 3});
+    rest(other_, {FIRST + 20});
+
+    expectMoveTo(side_, FIRST, baseAround(FIRST, FIRST + 20));
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NewBestAtTheHighEdge_Moves) {
+    rest(side_, {FIRST + 1});
+    rest(other_, {FIRST + 30});
+
+    expectMoveTo(side_, FIRST + SPAN - 1, baseAround(FIRST + SPAN - 1, FIRST + 30));
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_SamePriceAsTheBestAtTheEdge_Moves) {
+    rest(side_, {FIRST + SPAN - 1});
+
+    expectMoveTo(side_, FIRST + SPAN - 1, baseAround(FIRST + SPAN - 1));
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_OtherSideOnlyOutside_UsesItsBest) {
+    rest(other_, {FIRST + 100, FIRST + 400});
+
+    expectMoveTo(side_, FIRST + SPAN - 1, baseAround(FIRST + SPAN - 1, FIRST + 100));
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_EmptyBook_PlacesTheWindowAroundTheOrder) {
+    expectMoveTo(side_, 4'000, baseAround(4'000));
+    EXPECT_NE(bestAt(levels_, side_).position, NONE);
+    EXPECT_EQ(bestAt(levels_, other_).level, nullptr);
+}
+
+// --------------------------
+// Moving: directions and distances
+// --------------------------
+TEST_P(MovingPriceLevelsTest, MoveTo_SameBase_ChangesNothing) {
+    rest(side_, {FIRST - 4, FIRST, FIRST + 2});
+    rest(other_, {FIRST + 7, FIRST + 9});
+
+    expectMoveKeepsEverything(FIRST);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_Up_LevelsLeaveAndEnterInTheSameMove) {
+    rest(side_, {100, FIRST - 5, FIRST, FIRST + 1, FIRST + 3});
+    rest(other_, {FIRST + 7, FIRST + 9, FIRST + 11, 7'000});
+
+    expectMoveKeepsEverything(FIRST + 3);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_Down_LevelsLeaveAndEnterInTheSameMove) {
+    rest(side_, {100, FIRST - 3, FIRST - 2, FIRST + 1});
+    rest(other_, {FIRST + 4, FIRST + 5, FIRST + 7, 7'000});
+
+    expectMoveKeepsEverything(FIRST - 3);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_UpByOne_OnlyTheFirstPositionLeaves) {
+    rest(side_, {FIRST, FIRST + 1});
+    rest(other_, {FIRST + 7, FIRST + 8});
+
+    expectMoveKeepsEverything(FIRST + 1);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_DownByOne_OnlyTheLastPositionLeaves) {
+    rest(side_, {FIRST - 1, FIRST});
+    rest(other_, {FIRST + 6, FIRST + 7});
+
+    expectMoveKeepsEverything(FIRST - 1);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_UpByTheSize_EverythingLeavesAndTheMapEnters) {
+    rest(side_, {100, FIRST, FIRST + 3, FIRST + 7});
+    rest(other_, {FIRST + 12, FIRST + 20, 7'000});
+
+    expectMoveKeepsEverything(FIRST + SPAN);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_DownByTheSize_EverythingLeavesAndTheMapEnters) {
+    rest(side_, {100, FIRST - 8, FIRST - 5, FIRST - 1});
+    rest(other_, {FIRST, FIRST + 4, FIRST + 7, 7'000});
+
+    expectMoveKeepsEverything(FIRST - SPAN);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_UpByMoreThanTheSize_EverythingLeavesAndTheMapEnters) {
+    rest(side_, {100, FIRST, FIRST + 2, FIRST + 7});
+    rest(other_, {FIRST + 25, FIRST + 40, 7'000});
+
+    expectMoveKeepsEverything(FIRST + 20);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_DownByMoreThanTheSize_EverythingLeavesAndTheMapEnters) {
+    rest(side_, {100, FIRST - 28, FIRST - 20, FIRST - 15});
+    rest(other_, {FIRST, FIRST + 4, FIRST + 7, 7'000});
+
+    expectMoveKeepsEverything(FIRST - 20);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_WindowWithOnlyOneSide_TheOtherIndexStaysEmpty) {
+    rest(side_, {FIRST, FIRST + 1});
+
+    expectMoveKeepsEverything(FIRST + 5);
+
+    EXPECT_EQ(bestAt(levels_, other_).level, nullptr);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_EmptyBook_OnlyTheBaseChanges) {
+    levels_.moveTo(baseTickAt(FIRST + 30));
+
+    expectWindowAt(FIRST + 30);
+    EXPECT_EQ(bestAt(levels_, side_).level, nullptr);
+    EXPECT_EQ(bestAt(levels_, other_).level, nullptr);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_EnteringLevelIsTheBest_WalkStartsInTheWindow) {
+    rest(side_, {FIRST - 6, 100});
+    rest(other_, {FIRST + 3, 7'000});
+
+    levels_.moveTo(baseTickAt(FIRST - 8));
+
+    Cursor best = bestAt(levels_, side_);
+    EXPECT_EQ(best.price, priceAt(FIRST - 6));
+    EXPECT_EQ(best.position, positionIn(FIRST - 8, FIRST - 6));
+    expectNodesPointToTheirLevels(levels_);
+    expectWindowAt(FIRST - 8);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_LevelsOnTheWayOut_CanBeUsedFromTheMap) {
+    OrderNode* first = addNode(side_, FIRST, 10);
+    OrderNode* second = addNode(side_, FIRST, 20);
+
+    levels_.moveTo(baseTickAt(FIRST + 3));
+    OrderNode* third = addNode(side_, FIRST, 30);
+    levels_.remove(first);
+
+    expectLevel(side_, FIRST, {second->order.getID(), third->order.getID()}, 50);
+    levels_.remove(second);
+    levels_.remove(third);
+    EXPECT_EQ(levels_.levelOf(side_, priceAt(FIRST)), nullptr);
+    EXPECT_EQ(bestAt(levels_, side_).level, nullptr);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_LevelsAfterTheMove_FillAndRemoveKeepTheTotals) {
+    OrderNode* leaving = addNode(side_, FIRST, 100);
+    OrderNode* staying = addNode(side_, FIRST + 4, 100);
+    OrderNode* entering = addNode(other_, FIRST + 9, 100);
+    levels_.moveTo(baseTickAt(FIRST + 3));
+
+    PriceLevels::fill(leaving, 30);
+    PriceLevels::fill(staying, 40);
+    PriceLevels::fill(entering, 50);
+
+    expectLevel(side_, FIRST, {leaving->order.getID()}, 70);
+    expectLevel(side_, FIRST + 4, {staying->order.getID()}, 60);
+    expectLevel(other_, FIRST + 9, {entering->order.getID()}, 50);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_UpAndDownOverTheSamePrices_NothingStaleReappears) {
+    rest(side_, {FIRST - 6, FIRST - 3, FIRST});
+    rest(other_, {FIRST + 7, FIRST + 10, FIRST + 13});
+
+    for (Price first : {FIRST + 6, FIRST - 6, FIRST + 3, FIRST - 3, FIRST + 7, FIRST - 6, FIRST + 7, FIRST, FIRST + 1}) {
+        SCOPED_TRACE(::testing::Message() << "first " << first);
+        expectMoveKeepsEverything(first);
+    }
+
+    expectLevel(side_, FIRST, {5, 6}, 10 + 25 + FIRST % 7);
+}
+
+TEST_P(MovingPriceLevelsTest, MoveTo_RemovedLevelsOnTheWayBack_DoNotComeBack) {
+    OrderNode* low = addNode(side_, FIRST, 10);
+    OrderNode* high = addNode(other_, FIRST + 7, 10);
+
+    levels_.moveTo(baseTickAt(FIRST + 6));
+    levels_.remove(low);
+    levels_.moveTo(baseTickAt(FIRST));
+    levels_.moveTo(baseTickAt(FIRST + 3));
+    levels_.remove(high);
+    levels_.moveTo(baseTickAt(FIRST));
+
+    EXPECT_EQ(bestAt(levels_, side_).level, nullptr);
+    EXPECT_EQ(bestAt(levels_, other_).level, nullptr);
+    expectNoLevel(side_, FIRST);
+    expectNoLevel(other_, FIRST + 7);
+}
+
+// --------------------------
+// Moving: the ends of the band
+// --------------------------
+TEST_P(MovingPriceLevelsTest, PrepareFor_NearTheStartOfTheBand_WindowStopsAtIt) {
+    // Prices from 1 to 100 in a window of 16
+    PriceLevels levels(1, 1, 100, 16);
+    levels.prepareFor(side_, 3);
+    EXPECT_EQ(levels.windowBaseTick(), 1);
+
+    levels.prepareFor(side_, 12);
+    levels.prepareFor(side_, 1);
+    EXPECT_EQ(levels.windowBaseTick(), 1);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_NearTheEndOfTheBand_WindowStopsAtIt) {
+    PriceLevels levels(1, 1, 100, 16);
+
+    levels.prepareFor(side_, 100);
+    EXPECT_EQ(levels.windowBaseTick(), 85);
+
+    levels.prepareFor(side_, 99);
+    EXPECT_EQ(levels.windowBaseTick(), 85);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_FarFromTheEndsOfTheBand_WindowIsCentred) {
+    PriceLevels levels(1, 1, 100, 16);
+
+    levels.prepareFor(side_, 50);
+
+    EXPECT_EQ(levels.windowBaseTick(), 42);
+}
+
+TEST_P(MovingPriceLevelsTest, PrepareFor_BandEndsAtTheLargestPrice_WindowStopsAtIt) {
+    constexpr Price LARGEST = std::numeric_limits<Price>::max();
+    PriceLevels levels(1, LARGEST - 100, LARGEST, 16);
+    std::deque<OrderNode> nodes;
+
+    levels.prepareFor(side_, LARGEST);
+    nodes.emplace_back(Order(1, OWNER, OrderType::GTC, side_, LARGEST, 10));
+    levels.add(&nodes.back());
+
+    EXPECT_EQ(levels.windowBaseTick(), static_cast<std::int64_t>(LARGEST) - 15);
+    EXPECT_NE(bestAt(levels, side_).position, NONE);
+    EXPECT_TRUE(levels.outsideRuleHolds());
+
+    levels.prepareFor(side_, LARGEST);
+    EXPECT_EQ(levels.windowBaseTick(), static_cast<std::int64_t>(LARGEST) - 15);
+    levels.remove(&nodes.back());
+}
+
+TEST(PriceLevelsLargestPriceTest, MoveTo_LevelsGoOutAndComeBackAtTheEndOfTheBand) {
+    constexpr Price LARGEST = std::numeric_limits<Price>::max();
+    PriceLevels levels(1, LARGEST - 100, LARGEST, 16);
+    std::deque<OrderNode> nodes;
+    nodes.emplace_back(Order(1, OWNER, OrderType::GTC, Side::buy, LARGEST - 99, 10));
+    nodes.emplace_back(Order(2, OWNER, OrderType::GTC, Side::sell, LARGEST, 20));
+    levels.add(&nodes[0]);
+    levels.add(&nodes[1]);
+    std::vector<LevelState> before = stateOf(levels);
+
+    // The sell is outside the first window and comes in
+    levels.moveTo(static_cast<std::int64_t>(LARGEST) - 15);
+    EXPECT_EQ(stateOf(levels), before);
+    expectNodesPointToTheirLevels(levels);
+    EXPECT_TRUE(levels.outsideRuleHolds());
+    EXPECT_NE(bestAt(levels, Side::sell).position, NONE);
+    EXPECT_EQ(bestAt(levels, Side::buy).position, NONE);
+
+    levels.moveTo(static_cast<std::int64_t>(LARGEST) - 100);
+    EXPECT_EQ(stateOf(levels), before);
+    expectNodesPointToTheirLevels(levels);
+    EXPECT_NE(bestAt(levels, Side::buy).position, NONE);
+    EXPECT_EQ(bestAt(levels, Side::sell).position, NONE);
+}
+
+// --------------------------
+// Random run with moves
+// --------------------------
+static void runRandomMoves(std::size_t windowSize, unsigned seed) {
+    constexpr std::size_t STEPS = 20'000;
+
+    PriceLevels levels(TICK, MIN_PRICE, MAX_PRICE, windowSize);
+    std::deque<OrderNode> nodes;
+    std::vector<OrderNode*> live;
+    Model model;
+    std::mt19937 generator(seed);
+    std::uniform_int_distribution<int> percent(0, 99);
+    OrderID nextID {1};
+    Price centre {5'000};
+    std::int64_t lastBase = levels.windowBaseTick();
+    std::size_t moves {0};
+    std::size_t added {0};
+
+    auto between = [&](Price low, Price high) {
+        return std::uniform_int_distribution<Price>(low, high)(generator);
+    };
+
+    auto isInside = [&](Price price) {
+        std::int64_t tick = price / TICK;
+        return tick >= levels.windowBaseTick() && tick < levels.windowBaseTick() + static_cast<std::int64_t>(windowSize);
+    };
+
+    auto checkSide = [&](Side side, std::size_t step) {
+        std::vector<Cursor> cursors = walk(levels, side);
+        const ModelSide& modelSide = model.of(side);
+        ASSERT_EQ(cursors.size(), modelSide.size()) << "step " << step;
+
+        // The buys have the highest price first and the sells the lowest
+        std::vector<Price> expected;
+        for (const auto& [price, queue] : modelSide)
+            expected.push_back(price);
+        if (side == Side::buy) std::reverse(expected.begin(), expected.end());
+
+        for (std::size_t i {0}; i < expected.size(); ++i) {
+            const Cursor& cursor = cursors[i];
+            ASSERT_EQ(cursor.price, expected[i]) << "step " << step;
+            ASSERT_EQ(cursor.level, levels.levelOf(side, cursor.price)) << "step " << step;
+            ASSERT_EQ(cursor.position == NONE, !isInside(cursor.price)) << "step " << step;
+
+            IDs expectedIDs;
+            Quantity expectedQuantity {0};
+            for (const Resting& resting : modelSide.at(cursor.price)) {
+                expectedIDs.push_back(resting.node->order.getID());
+                expectedQuantity += resting.remaining;
+            }
+            ASSERT_EQ(forwardIDs(cursor.level->queue), expectedIDs) << "step " << step;
+            ASSERT_EQ(cursor.level->data.qty_, expectedQuantity) << "step " << step;
+            ASSERT_EQ(cursor.level->data.count_, expectedIDs.size()) << "step " << step;
+            for (const OrderNode* node = cursor.level->queue.head; node != nullptr; node = node->next) {
+                ASSERT_EQ(node->level, &cursor.level->queue) << "step " << step;
+                ASSERT_EQ(node->levelData, &cursor.level->data) << "step " << step;
+            }
+        }
+    };
+
+    for (std::size_t step {0}; step < STEPS; ++step) {
+        // The market drifts, now and then with a jump
+        centre = std::clamp<Price>(centre + between(-4, 4) + (percent(generator) < 1 ? between(-300, 300) : 0), 30, LAST_INDEX - 30);
+
+        int choice = percent(generator);
+        if (choice < 50 || live.empty()) {
+            Side side = (percent(generator) < 50) ? Side::buy : Side::sell;
+            Price price = MIN_PRICE + (centre + between(-12, 12)) * TICK;
+            // It rests, so it must not cross
+            if (side == Side::buy && !model.sells.empty() && price >= model.sells.begin()->first) continue;
+            if (side == Side::sell && !model.buys.empty() && price <= model.buys.rbegin()->first) continue;
+
+            Quantity quantity = static_cast<Quantity>(percent(generator)) + 1;
+            nodes.emplace_back(Order(nextID++, OWNER, OrderType::GTC, side, price, quantity));
+            OrderNode* node = &nodes.back();
+            levels.prepareFor(side, price);
+            levels.add(node);
+            model.of(side)[price].push_back({node, quantity});
+            live.push_back(node);
+            ++added;
+        } else if (choice < 65) {
+            OrderNode* node = live[std::uniform_int_distribution<std::size_t>(0, live.size() - 1)(generator)];
+            Quantity remaining = node->order.getRemainingQuantity();
+            if (remaining == 0) continue;
+
+            Quantity quantity = std::uniform_int_distribution<Quantity>(1, remaining)(generator);
+            PriceLevels::fill(node, quantity);
+            for (Resting& resting : model.of(node->order.getSide())[node->order.getPrice()])
+                if (resting.node == node) resting.remaining -= quantity;
+        } else {
+            std::size_t index = std::uniform_int_distribution<std::size_t>(0, live.size() - 1)(generator);
+            OrderNode* node = live[index];
+            live[index] = live.back();
+            live.pop_back();
+
+            Price price = node->order.getPrice();
+            ModelSide& modelSide = model.of(node->order.getSide());
+            std::vector<Resting>& queue = modelSide[price];
+            queue.erase(std::find_if(queue.begin(), queue.end(),
+                                     [&](const Resting& resting) { return resting.node == node; }));
+            if (queue.empty()) modelSide.erase(price);
+
+            levels.remove(node);
+        }
+
+        if (levels.windowBaseTick() != lastBase) ++moves;
+        lastBase = levels.windowBaseTick();
+
+        EXPECT_TRUE(levels.outsideRuleHolds()) << "step " << step;
+        checkSide(Side::buy, step);
+        checkSide(Side::sell, step);
+        if (::testing::Test::HasFailure()) FAIL() << "stopped at step " << step;
+    }
+
+    EXPECT_GT(moves, 100u);
+    EXPECT_GT(added, 1'000u);
+}
+
+TEST(PriceLevelsRandomTest, RandomOperationsWithMoves_SmallWindowMatchesAModel) {
+    runRandomMoves(8, 7);
+}
+
+TEST(PriceLevelsRandomTest, RandomOperationsWithMoves_WindowOfSixteenMatchesAModel) {
+    runRandomMoves(16, 11);
 }
