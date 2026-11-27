@@ -7,6 +7,7 @@ add_executable(orderbook_tests
     order_queue_test.cpp
     order_table_test.cpp
     pool_test.cpp
+    node_pool_test.cpp
     book_config_test.cpp
     add_order_test.cpp
     cancel_order_test.cpp

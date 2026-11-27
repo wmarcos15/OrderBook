@@ -6,9 +6,12 @@
 #include <map>
 #include <new>
 #include <optional>
+#include <set>
 #include <tuple>
 #include <utility>
+#include <vector>
 #include "order_queue.hpp"
+#include "node_pool.hpp"
 #include "orderbook.hpp"
 #include "price_levels.hpp"
 #include "queue_test_utils.hpp"
@@ -411,4 +414,34 @@ TEST(MoveAllocationTest, MoveWithNothingToPushOut_AllocatesNothing) {
 
     EXPECT_EQ(allocationsOf([&] { levels.moveTo(5'020); }), 0u);
     EXPECT_EQ(allocationsOf([&] { levels.moveTo(4'990); }), 0u);
+}
+
+// --------------------------
+// Node pool
+// --------------------------
+TEST(NodePoolAllocationTest, ChunkAllocationFails_PoolStaysUnchangedAndUsable) {
+    constexpr std::size_t BLOCK = 48;
+    // Reaches the cap and starts a second capped chunk
+    constexpr std::size_t BLOCKS = detail::NodePool::FIRST_CHUNK_BLOCKS * 127 + detail::NodePool::MAX_CHUNK_BLOCKS + 1;
+
+    std::size_t failures {0};
+    for (std::size_t allocation {1}; ; ++allocation) {
+        SCOPED_TRACE(::testing::Message() << "allocation " << allocation);
+        detail::NodePool pool;
+        std::vector<void*> blocks;
+
+        bool failed = failsAt(allocation, [&] {
+            for (std::size_t i {0}; i < BLOCKS; ++i) blocks.push_back(pool.allocate(BLOCK, 8));
+        });
+        if (!failed) break;
+
+        ++failures;
+        std::set<void*> live(blocks.begin(), blocks.end());
+        EXPECT_EQ(live.size(), blocks.size());
+
+        // Usable: the rest of the run goes through
+        for (std::size_t i {blocks.size()}; i < BLOCKS; ++i) live.insert(pool.allocate(BLOCK, 8));
+        EXPECT_EQ(live.size(), BLOCKS);
+    }
+    EXPECT_GT(failures, 0u);
 }
