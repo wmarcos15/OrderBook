@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <set>
 #include <string>
@@ -68,6 +69,17 @@ public:
         for (std::size_t position = index.best(); position != NONE && found.size() < WALK_LIMIT; position = index.after(position))
             found.push_back(position);
         return found;
+    }
+
+    // For the sells this drops the back of the bitmap
+    static void shiftDown(Index& index, std::size_t n) {
+        if constexpr (SIDE == Side::buy) index.dropFront(n);
+        else index.dropBack(n);
+    }
+
+    static void shiftUp(Index& index, std::size_t n) {
+        if constexpr (SIDE == Side::buy) index.dropBack(n);
+        else index.dropFront(n);
     }
 
     // Best first
@@ -267,6 +279,130 @@ TYPED_TEST(SideIndexTest, HundredThousandPositions_FirstAndLast_CrossTheGap) {
     index.remove(this->at(POSITIONS - 1, POSITIONS));
 
     EXPECT_EQ(index.best(), this->at(0, POSITIONS));
+}
+
+// --------------------------
+// Dropping positions
+// --------------------------
+TYPED_TEST(SideIndexTest, ShiftDown_BestKept_BestMovesDown) {
+    auto index = this->makeIndex({2, 5, 8});
+
+    this->shiftDown(index, 2);
+
+    this->expectHolds(index, {6, 3, 0});
+    EXPECT_EQ(index.best(), this->at(6));
+}
+
+TYPED_TEST(SideIndexTest, ShiftUp_BestKept_BestMovesUp) {
+    auto index = this->makeIndex({2, 5, 6});
+
+    this->shiftUp(index, 3);
+
+    this->expectHolds(index, {9, 8, 5});
+    EXPECT_EQ(index.best(), this->at(9));
+}
+
+TYPED_TEST(SideIndexTest, ShiftDown_WorsePositionsDropped_BestMoves) {
+    auto index = this->makeIndex({1, 5, 8});
+
+    this->shiftDown(index, 3);
+
+    this->expectHolds(index, {5, 2});
+    EXPECT_EQ(index.best(), this->at(5));
+}
+
+TYPED_TEST(SideIndexTest, ShiftUp_BestDropped_NextOneTakesOver) {
+    auto index = this->makeIndex({2, 5, 8});
+
+    this->shiftUp(index, 3);
+
+    this->expectHolds(index, {8, 5});
+    EXPECT_EQ(index.best(), this->at(8));
+}
+
+TYPED_TEST(SideIndexTest, ShiftUp_SeveralBestDropped_OnlyTheWorstIsLeft) {
+    auto index = this->makeIndex({2, 5, 8});
+
+    this->shiftUp(index, 5);
+
+    this->expectHolds(index, {7});
+    EXPECT_EQ(index.best(), this->at(7));
+}
+
+TYPED_TEST(SideIndexTest, Shift_EverythingDropped_BestIsNone) {
+    for (std::size_t n : {SMALL, SMALL + 1, std::numeric_limits<std::size_t>::max()}) {
+        SCOPED_TRACE(n);
+        auto down = this->makeIndex({2, 5, 8});
+        auto up = this->makeIndex({2, 5, 8});
+
+        this->shiftDown(down, n);
+        this->shiftUp(up, n);
+
+        this->expectHolds(down, {});
+        this->expectHolds(up, {});
+        EXPECT_EQ(down.best(), NONE);
+        EXPECT_EQ(up.best(), NONE);
+    }
+}
+
+TYPED_TEST(SideIndexTest, Shift_OnlyTheBestDropped_IsNone) {
+    auto down = this->makeIndex({0});
+    auto up = this->makeIndex({SMALL - 1});
+
+    this->shiftDown(down, 1);
+    this->shiftUp(up, 1);
+
+    EXPECT_EQ(down.best(), NONE);
+    EXPECT_EQ(up.best(), NONE);
+}
+
+TYPED_TEST(SideIndexTest, Shift_Zero_ChangesNothing) {
+    auto index = this->makeIndex({2, 5, 8});
+
+    this->shiftDown(index, 0);
+    this->shiftUp(index, 0);
+
+    this->expectHolds(index, {8, 5, 2});
+    EXPECT_EQ(index.best(), this->at(8));
+}
+
+TYPED_TEST(SideIndexTest, Shift_ThenAfter_WalksTheShiftedPositions) {
+    auto down = this->makeIndex({1, 4, 7});
+    auto up = this->makeIndex({1, 4, 7});
+
+    this->shiftDown(down, 1);
+    this->shiftUp(up, 1);
+
+    EXPECT_EQ(down.best(), this->at(6));
+    EXPECT_EQ(down.after(this->at(6)), this->at(3));
+    EXPECT_EQ(down.after(this->at(3)), this->at(0));
+    EXPECT_EQ(down.after(this->at(0)), NONE);
+    EXPECT_EQ(up.best(), this->at(8));
+    EXPECT_EQ(up.after(this->at(8)), this->at(5));
+    EXPECT_EQ(up.after(this->at(5)), this->at(2));
+    EXPECT_EQ(up.after(this->at(2)), NONE);
+}
+
+TYPED_TEST(SideIndexTest, Shift_ThenAddAndRemove_KeepsTheBestRight) {
+    auto index = this->makeIndex({2, 5, 8});
+    this->shiftDown(index, 2);
+
+    index.add(this->at(9));
+    index.remove(this->at(9));
+    index.remove(this->at(6));
+
+    this->expectHolds(index, {3, 0});
+}
+
+TYPED_TEST(SideIndexTest, Shift_AcrossWords_BestAndWalkFollow) {
+    auto down = this->makeIndex({10, 5'000, 8'000}, LARGE);
+    auto up = this->makeIndex({10, 5'000, 8'000}, LARGE);
+
+    this->shiftDown(down, 4'090);
+    this->shiftUp(up, 3'000);
+
+    this->expectHolds(down, {3'910, 910}, LARGE);
+    this->expectHolds(up, {8'000, 3'010}, LARGE);
 }
 
 // --------------------------

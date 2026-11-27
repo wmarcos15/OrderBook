@@ -241,6 +241,236 @@ TEST(BitmapTest, RandomOperations_AgreeWithStdSet) {
 }
 
 // --------------------------
+// Dropping positions
+// --------------------------
+constexpr std::size_t HUGE_AMOUNT = std::numeric_limits<std::size_t>::max();
+
+// Multiples of a word or not, and one that crosses the words of the summary
+static const Positions DROP_SIZES {1, 8, 64, 100, 128, 4'096 + 100};
+
+static const Positions SMALL_AMOUNTS {0, 1, 63, 64, 65, 127, 128};
+
+static Positions amountsFor(std::size_t positions) {
+    return {0, 1, 63, 64, 65, 127, 128, positions - 1, positions, positions + 1, HUGE_AMOUNT};
+}
+
+static std::set<std::size_t> edgeBits(std::size_t positions) {
+    std::set<std::size_t> on;
+    for (std::size_t position : Positions {0, 63, 64, 127, positions - 1}) {
+        if (position < positions) on.insert(position);
+    }
+    return on;
+}
+
+static std::set<std::size_t> everyBit(std::size_t positions) {
+    std::set<std::size_t> on;
+    for (std::size_t position {0}; position < positions; ++position)
+        on.insert(on.end(), position);
+    return on;
+}
+
+static Bitmap makeBitmap(std::size_t positions, const std::set<std::size_t>& on) {
+    Bitmap bitmap(positions);
+    for (std::size_t position : on)
+        bitmap.set(position);
+    return bitmap;
+}
+
+static std::set<std::size_t> afterDropFront(const std::set<std::size_t>& on, std::size_t n) {
+    std::set<std::size_t> kept;
+    for (std::size_t position : on) {
+        if (position >= n) kept.insert(kept.end(), position - n);
+    }
+    return kept;
+}
+
+static std::set<std::size_t> afterDropBack(const std::set<std::size_t>& on, std::size_t n, std::size_t positions) {
+    std::set<std::size_t> kept;
+    for (std::size_t position : on) {
+        if (n < positions && position < positions - n) kept.insert(kept.end(), position + n);
+    }
+    return kept;
+}
+
+// The padding of the last word must stay off, so nothing is found at or past the size
+static void expectDropFront(std::size_t positions, const std::set<std::size_t>& on) {
+    for (std::size_t n : amountsFor(positions)) {
+        SCOPED_TRACE(::testing::Message() << positions << " positions, dropping " << n);
+        Bitmap bitmap = makeBitmap(positions, on);
+
+        bitmap.dropFront(n);
+
+        expectOnlyThese(bitmap, positions, afterDropFront(on, n));
+        EXPECT_EQ(bitmap.next(positions), NONE);
+    }
+}
+
+static void expectDropBack(std::size_t positions, const std::set<std::size_t>& on) {
+    for (std::size_t n : amountsFor(positions)) {
+        SCOPED_TRACE(::testing::Message() << positions << " positions, dropping " << n);
+        Bitmap bitmap = makeBitmap(positions, on);
+
+        bitmap.dropBack(n);
+
+        expectOnlyThese(bitmap, positions, afterDropBack(on, n, positions));
+        EXPECT_EQ(bitmap.next(positions), NONE);
+    }
+}
+
+TEST(BitmapTest, DropFront_BitsOnWordEdges_MoveTowardsZero) {
+    for (std::size_t positions : DROP_SIZES)
+        expectDropFront(positions, edgeBits(positions));
+}
+
+TEST(BitmapTest, DropBack_BitsOnWordEdges_MoveTowardsTheEnd) {
+    for (std::size_t positions : DROP_SIZES)
+        expectDropBack(positions, edgeBits(positions));
+}
+
+TEST(BitmapTest, DropFront_FullBitmap_OnlyTheFrontIsLost) {
+    for (std::size_t positions : DROP_SIZES)
+        expectDropFront(positions, everyBit(positions));
+}
+
+TEST(BitmapTest, DropBack_FullBitmap_NothingIsFoundPastTheSize) {
+    for (std::size_t positions : DROP_SIZES)
+        expectDropBack(positions, everyBit(positions));
+}
+
+TEST(BitmapTest, Drop_Zero_ChangesNothing) {
+    for (std::size_t positions : DROP_SIZES) {
+        SCOPED_TRACE(positions);
+        Bitmap bitmap = makeBitmap(positions, edgeBits(positions));
+
+        bitmap.dropFront(0);
+        bitmap.dropBack(0);
+
+        expectOnlyThese(bitmap, positions, edgeBits(positions));
+    }
+}
+
+TEST(BitmapTest, Drop_AtLeastTheSize_EmptiesItAndItStaysUsable) {
+    for (std::size_t positions : DROP_SIZES) {
+        for (std::size_t n : {positions, positions + 1, HUGE_AMOUNT}) {
+            SCOPED_TRACE(::testing::Message() << positions << " positions, dropping " << n);
+            Bitmap front = makeBitmap(positions, everyBit(positions));
+            Bitmap back = makeBitmap(positions, everyBit(positions));
+
+            front.dropFront(n);
+            back.dropBack(n);
+
+            expectOnlyThese(front, positions, {});
+            expectOnlyThese(back, positions, {});
+
+            front.set(positions - 1);
+            back.set(0);
+            expectOnlyThese(front, positions, {positions - 1});
+            expectOnlyThese(back, positions, {0});
+        }
+    }
+}
+
+TEST(BitmapTest, Drop_ThenSetAndClear_SummaryStaysRight) {
+    Bitmap bitmap = makeBitmap(LARGE, {0, 4'100, 8'200, 12'287});
+
+    bitmap.dropFront(4'096);
+    bitmap.set(12'000);
+    bitmap.clear(4);
+    EXPECT_EQ(walkUp(bitmap), (Positions {4'104, 8'191, 12'000}));
+
+    bitmap.dropBack(4'096);
+    bitmap.clear(8'200);
+    bitmap.set(0);
+    EXPECT_EQ(walkUp(bitmap), (Positions {0, 12'287}));
+}
+
+TEST(BitmapTest, DropFront_Twice_SameAsOnce) {
+    for (std::size_t positions : DROP_SIZES) {
+        for (std::size_t first : SMALL_AMOUNTS) {
+            for (std::size_t second : SMALL_AMOUNTS) {
+                SCOPED_TRACE(::testing::Message() << positions << " positions, dropping " << first << " and " << second);
+                auto on = edgeBits(positions);
+                Bitmap twice = makeBitmap(positions, on);
+                Bitmap once = makeBitmap(positions, on);
+
+                twice.dropFront(first);
+                twice.dropFront(second);
+                once.dropFront(first + second);
+
+                EXPECT_EQ(walkUp(twice), walkUp(once));
+                expectOnlyThese(twice, positions, afterDropFront(on, first + second));
+            }
+        }
+    }
+}
+
+TEST(BitmapTest, DropBack_Twice_SameAsOnce) {
+    for (std::size_t positions : DROP_SIZES) {
+        for (std::size_t first : SMALL_AMOUNTS) {
+            for (std::size_t second : SMALL_AMOUNTS) {
+                SCOPED_TRACE(::testing::Message() << positions << " positions, dropping " << first << " and " << second);
+                auto on = edgeBits(positions);
+                Bitmap twice = makeBitmap(positions, on);
+                Bitmap once = makeBitmap(positions, on);
+
+                twice.dropBack(first);
+                twice.dropBack(second);
+                once.dropBack(first + second);
+
+                EXPECT_EQ(walkUp(twice), walkUp(once));
+                expectOnlyThese(twice, positions, afterDropBack(on, first + second, positions));
+            }
+        }
+    }
+}
+
+static void runRandomDrops(std::size_t positions, unsigned seed) {
+    constexpr int OPERATIONS = 1'000;
+
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<std::size_t> anyPosition(0, positions - 1);
+    std::uniform_int_distribution<std::size_t> anyAmount(0, positions / 4);
+    std::uniform_int_distribution<int> percent(0, 99);
+
+    Bitmap bitmap(positions);
+    std::set<std::size_t> model;
+
+    for (int i {0}; i < OPERATIONS; ++i) {
+        int choice = percent(rng);
+        if (choice < 45) {
+            std::size_t position = anyPosition(rng);
+            bitmap.set(position);
+            model.insert(position);
+        } else if (choice < 65) {
+            std::size_t position = anyPosition(rng);
+            bitmap.clear(position);
+            model.erase(position);
+        } else {
+            // Sometimes far past the size
+            std::size_t n = (percent(rng) < 5) ? 2 * positions : anyAmount(rng);
+            if (choice < 82) {
+                bitmap.dropFront(n);
+                model = afterDropFront(model, n);
+            } else {
+                bitmap.dropBack(n);
+                model = afterDropBack(model, n, positions);
+            }
+        }
+
+        expectOnlyThese(bitmap, positions, model);
+        ASSERT_FALSE(::testing::Test::HasFailure()) << "operation " << i;
+    }
+}
+
+TEST(BitmapTest, RandomDrops_100Positions_AgreeWithStdSet) {
+    runRandomDrops(100, 4242);
+}
+
+TEST(BitmapTest, RandomDrops_5000Positions_AgreeWithStdSet) {
+    runRandomDrops(5'000, 99);
+}
+
+// --------------------------
 // Copy and move
 // --------------------------
 TEST(BitmapTest, Copy_ChangingTheCopy_LeavesTheOriginalAlone) {
