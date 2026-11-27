@@ -1,4 +1,5 @@
 #pragma once
+#include "node_pool.hpp"
 #include "order_queue.hpp"
 #include "types.hpp"
 #include "window.hpp"
@@ -11,7 +12,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <memory_resource>
 
 namespace orderbook::detail {
 
@@ -27,13 +27,17 @@ public:
     };
 
 private:
-    // Behind a pointer so that moving never moves a level: a pmr map assigned
-    // across pools would copy its nodes
+    // Behind a pointer so that moving never moves a level: a map assigned
+    // from another one with a different pool would copy its nodes
     struct Outside {
-        // Declared first: the maps use it
-        std::pmr::unsynchronized_pool_resource memory;
-        std::pmr::map<Price, Level, std::greater<Price>> bids {&memory};
-        std::pmr::map<Price, Level> asks {&memory};
+        using Entry = std::pair<const Price, Level>;
+        template<typename Compare>
+        using Map = std::map<Price, Level, Compare, NodeAllocator<Entry>>;
+
+        // Declared first: the maps use it, and they share it because their nodes have the same size
+        NodePool nodes;
+        Map<std::greater<Price>> bids {NodeAllocator<Entry>(&nodes)};
+        Map<std::less<Price>> asks {NodeAllocator<Entry>(&nodes)};
     };
 
     Window window_;
