@@ -2,6 +2,7 @@ add_executable(orderbook_tests
     bitmap_test.cpp
     side_index_test.cpp
     ladder_test.cpp
+    window_test.cpp
     order_queue_test.cpp
     order_table_test.cpp
     pool_test.cpp
