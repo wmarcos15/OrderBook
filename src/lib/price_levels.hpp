@@ -185,6 +185,10 @@ public:
         assert(outsideRuleHolds());
     }
 
+    std::size_t windowSize() const {
+        return window_.size();
+    }
+
     // Can pass the largest Price, like the window's
     std::int64_t windowBaseTick() const {
         return window_.baseTick();

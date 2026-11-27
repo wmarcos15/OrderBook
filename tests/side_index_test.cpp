@@ -478,6 +478,17 @@ TYPED_TEST(SideIndexTest, MovedFrom_AssignedANewIndex_IsUsableAndTargetIsUntouch
     this->expectHolds(target, {8, 5, 2});
 }
 
+TYPED_TEST(SideIndexTest, MovedFrom_DropFrontAndBack_BestStaysNone) {
+    auto source = this->makeIndex({2, 5, 8});
+    auto target(std::move(source));
+
+    source.dropFront(3);
+    EXPECT_EQ(source.best(), NONE);
+    source.dropBack(3);
+    EXPECT_EQ(source.best(), NONE);
+    this->expectHolds(target, {8, 5, 2});
+}
+
 // --------------------------
 // Random operations
 // --------------------------

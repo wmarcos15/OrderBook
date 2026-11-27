@@ -816,6 +816,35 @@ TEST_P(PriceLevelsTest, WindowOfOne_OnlyItsPriceIsInside) {
 }
 
 // --------------------------
+// Window size
+// --------------------------
+TEST(PriceLevelsSizeTest, NarrowBand_WindowIsThePricesRoundedUpToAPowerOfTwo) {
+    for (Price tick : {Price {1}, Price {5}}) {
+        Price min = 20 * tick;
+        EXPECT_EQ(PriceLevels(tick, min, min, 64).windowSize(), 1u) << "tick " << tick;
+        EXPECT_EQ(PriceLevels(tick, min, min + 6 * tick, 64).windowSize(), 8u) << "tick " << tick;
+        EXPECT_EQ(PriceLevels(tick, min, min + 7 * tick, 64).windowSize(), 8u) << "tick " << tick;
+        EXPECT_EQ(PriceLevels(tick, min, min + 8 * tick, 64).windowSize(), 16u) << "tick " << tick;
+    }
+}
+
+TEST(PriceLevelsSizeTest, OnePriceAtTheTopOfTheRange_WindowIsOne) {
+    constexpr Price TOP_TICK = 5;
+    constexpr Price top = std::numeric_limits<Price>::max() - std::numeric_limits<Price>::max() % TOP_TICK;
+
+    EXPECT_EQ(PriceLevels(TOP_TICK, top, top, 64).windowSize(), 1u);
+}
+
+TEST(PriceLevelsSizeTest, WideBand_WindowIsTheOneAskedFor) {
+    EXPECT_EQ(PriceLevels(5, 5, 5'000, 64).windowSize(), 64u);
+    EXPECT_EQ(PriceLevels(1, 1, 64, 64).windowSize(), 64u);
+}
+
+TEST(PriceLevelsSizeTest, WindowOfOne_WideBand_StaysOne) {
+    EXPECT_EQ(PriceLevels(5, 5, 5'000, 1).windowSize(), 1u);
+}
+
+// --------------------------
 // Copy and move
 // --------------------------
 TEST(PriceLevelsTraitsTest, CopyIsDeletedAndMoveIsAllowed) {

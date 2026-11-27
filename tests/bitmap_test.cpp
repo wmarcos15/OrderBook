@@ -506,3 +506,13 @@ TEST(BitmapTest, Move_NewOwner_KeepsTheBits) {
 
     EXPECT_EQ(walkUp(moved), (Positions {10, 150}));
 }
+
+TEST(BitmapTest, MovedFrom_HighestAndLowest_AreNone) {
+    Bitmap original(200);
+    original.set(10);
+    Bitmap moved = std::move(original);
+
+    EXPECT_EQ(original.highest(), NONE);
+    EXPECT_EQ(original.lowest(), NONE);
+    EXPECT_EQ(moved.highest(), 10u);
+}
