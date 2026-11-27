@@ -38,6 +38,9 @@ private:
 
     Window window_;
     std::unique_ptr<Outside> outside_;
+    // The ends of the band, which the window never leaves
+    std::int64_t minTick_;
+    std::int64_t maxTick_;
 
     static std::size_t windowSizeFor(Price tickSize, Price minPrice, Price maxPrice, std::size_t windowSize) {
         assert(tickSize > 0 && minPrice > 0 && minPrice <= maxPrice);
@@ -55,6 +58,34 @@ private:
     static Cursor cursorAt(const auto& map, const auto& it) {
         if (it == map.end()) return {0, nullptr, Window::NONE};
         return {it->first, &it->second, Window::NONE};
+    }
+
+    Cursor bestOf(Side side) const {
+        return (side == Side::buy) ? best<Side::buy>() : best<Side::sell>();
+    }
+
+    bool leaves(std::size_t position, std::int64_t newBase) const {
+        std::int64_t tick = window_.baseTick() + static_cast<std::int64_t>(position);
+        return tick < newBase || tick >= newBase + static_cast<std::int64_t>(window_.size());
+    }
+
+    // The levels with orders that the new base leaves outside, buys first
+    template<class Action>
+    void forEachLeaving(std::int64_t newBase, Action action) const {
+        for (std::size_t position = window_.best<Side::buy>(); position != Window::NONE; position = window_.after<Side::buy>(position))
+            if (leaves(position, newBase)) action(Side::buy, position);
+        for (std::size_t position = window_.best<Side::sell>(); position != Window::NONE; position = window_.after<Side::sell>(position))
+            if (leaves(position, newBase)) action(Side::sell, position);
+    }
+
+    // The entries at the front are the ones closest to the window
+    template<class Map>
+    void enter(Side side, Map& map) {
+        for (auto it = map.begin(); it != map.end(); it = map.erase(it)) {
+            std::size_t position = window_.positionOf(it->first);
+            if (position == Window::NONE) return;
+            window_.putLevel(side, position, it->second);
+        }
     }
 
     template<class Map>
@@ -88,7 +119,8 @@ private:
 public:
     PriceLevels(Price tickSize, Price minPrice, Price maxPrice, std::size_t windowSize)
         : window_(tickSize, minPrice, windowSizeFor(tickSize, minPrice, maxPrice, windowSize)),
-        outside_(std::make_unique<Outside>()) {}
+        outside_(std::make_unique<Outside>()),
+        minTick_ {minPrice / tickSize}, maxTick_ {maxPrice / tickSize} {}
     PriceLevels(const PriceLevels&) = delete;
     PriceLevels& operator=(const PriceLevels&) = delete;
     PriceLevels(PriceLevels&&) = default;
@@ -97,6 +129,65 @@ public:
     // Only while the window is empty, and the caller keeps it inside the band
     void placeWindowAt(Price basePrice) {
         window_.placeAt(basePrice);
+    }
+
+    // Called just before an order rests at price. Only a new best near the edge or outside moves the window,
+    // so that it follows the market without moving for every order
+    void prepareFor(Side side, Price price) {
+        Cursor ownBest = bestOf(side);
+        if (ownBest.level != nullptr && (side == Side::buy ? price < ownBest.price : price > ownBest.price)) return;
+
+        std::size_t margin = window_.size() / 8;
+        std::size_t position = window_.positionOf(price);
+        if (position != Window::NONE && position >= margin && position < window_.size() - margin) return;
+
+        std::int64_t tickSize = window_.tickSize();
+        std::int64_t centre = price / tickSize;
+        Cursor otherBest = bestOf(side == Side::buy ? Side::sell : Side::buy);
+        if (otherBest.level != nullptr) centre = (centre + otherBest.price / tickSize) / 2;
+
+        std::int64_t size = static_cast<std::int64_t>(window_.size());
+        std::int64_t newBase = minTick_;
+        if (maxTick_ - minTick_ + 1 >= size) newBase = std::clamp(centre - size / 2, minTick_, maxTick_ - size + 1);
+        if (newBase != window_.baseTick()) moveTo(newBase);
+    }
+
+    // The caller keeps the outside rule: no bid above the new window and no ask below it
+    void moveTo(std::int64_t newBase) {
+        // Room for every level that leaves, so that nothing can fail after this
+        std::size_t reserved {0};
+        try {
+            forEachLeaving(newBase, [&](Side side, std::size_t position) {
+                Price price = window_.priceOf(position);
+                if (side == Side::buy) outside_->bids.try_emplace(price);
+                else outside_->asks.try_emplace(price);
+                ++reserved;
+            });
+        } catch (...) {
+            forEachLeaving(newBase, [&](Side side, std::size_t position) {
+                if (reserved == 0) return;
+                --reserved;
+                if (side == Side::buy) outside_->bids.erase(window_.priceOf(position));
+                else outside_->asks.erase(window_.priceOf(position));
+            });
+            throw;
+        }
+
+        forEachLeaving(newBase, [&](Side side, std::size_t position) {
+            Price price = window_.priceOf(position);
+            if (side == Side::buy) window_.takeLevel(position, outside_->bids.find(price)->second);
+            else window_.takeLevel(position, outside_->asks.find(price)->second);
+        });
+        window_.shiftTo(newBase);
+        enter(Side::buy, outside_->bids);
+        enter(Side::sell, outside_->asks);
+
+        assert(outsideRuleHolds());
+    }
+
+    // Can pass the largest Price, like the window's
+    std::int64_t windowBaseTick() const {
+        return window_.baseTick();
     }
 
     template<Side side>

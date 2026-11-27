@@ -48,6 +48,17 @@ private:
         else asks_.remove(position);
     }
 
+    // The nodes follow the level, and the old one is left empty
+    static void relocate(Level& from, Level& to) noexcept {
+        assert(to.queue.empty());
+        to = from;
+        for (OrderNode* node = to.queue.head; node != nullptr; node = node->next) {
+            node->level = &to.queue;
+            node->levelData = &to.data;
+        }
+        from = Level {};
+    }
+
     std::size_t slotOf(std::size_t position) const {
         assert(position < levels_.size());
         return static_cast<std::size_t>(base_ + static_cast<std::int64_t>(position)) & (levels_.size() - 1);
@@ -68,6 +79,31 @@ public:
     void placeAt(Price basePrice) {
         assert(bids_.best() == NONE && asks_.best() == NONE);
         base_ = baseTickOf(tickSize_, basePrice, levels_.size());
+    }
+
+    // Takes the level out of its slot but not out of the index: the move does that in one go
+    void takeLevel(std::size_t position, Level& destination) noexcept {
+        relocate(levels_[slotOf(position)], destination);
+    }
+
+    // The slot must be free, which the window leaves it when the level that was there goes out
+    void putLevel(Side side, std::size_t position, Level& source) noexcept {
+        assert(side == Side::buy ? !asks_.contains(position) : !bids_.contains(position));
+        relocate(source, levels_[slotOf(position)]);
+        addToIndex(side, position);
+    }
+
+    // The levels leaving have been taken. Slots are tied to the ticks, so none of the others moves
+    void shiftTo(std::int64_t newBase) noexcept {
+        std::int64_t distance = newBase - base_;
+        if (distance > 0) {
+            bids_.dropFront(static_cast<std::size_t>(distance));
+            asks_.dropFront(static_cast<std::size_t>(distance));
+        } else {
+            bids_.dropBack(static_cast<std::size_t>(-distance));
+            asks_.dropBack(static_cast<std::size_t>(-distance));
+        }
+        base_ = newBase;
     }
 
     std::size_t size() const {
