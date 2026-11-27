@@ -3,6 +3,7 @@ add_executable(orderbook_tests
     side_index_test.cpp
     ladder_test.cpp
     window_test.cpp
+    price_levels_test.cpp
     order_queue_test.cpp
     order_table_test.cpp
     pool_test.cpp

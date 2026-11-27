@@ -212,6 +212,105 @@ TEST_P(WindowTest, NewWindow_EveryPositionIsEmpty) {
 }
 
 // --------------------------
+// Place at
+// --------------------------
+TEST_P(WindowTest, PlaceAt_EmptyWindow_PositionZeroIsTheNewBase) {
+    window_.placeAt(1'000);
+
+    expectRoundTrip(window_, 1'000, TICK, SIZE);
+    expectSlots(window_, 200);
+    expectNone(window_, {BASE_PRICE, 995, 1'040, 1'045});
+}
+
+TEST_P(WindowTest, PlaceAt_BaseOnAWrapPoint_SlotsStartAtTheFirstLevel) {
+    window_.placeAt(40);
+
+    expectRoundTrip(window_, 40, TICK, SIZE);
+    expectSlots(window_, 8);
+}
+
+TEST_P(WindowTest, PlaceAt_SameBaseOrLowerBase_Works) {
+    window_.placeAt(BASE_PRICE);
+    expectRoundTrip(window_, BASE_PRICE, TICK, SIZE);
+
+    window_.placeAt(TICK);
+    expectRoundTrip(window_, TICK, TICK, SIZE);
+    expectSlots(window_, 1);
+}
+
+TEST_P(WindowTest, PlaceAt_NearTheLargestPrice_TopIsInside) {
+    Window high(1, 1, 8);
+
+    high.placeAt(MAX - 7);
+
+    expectRoundTrip(high, MAX - 7, 1, 8);
+    expectSlots(high, MAX - 7);
+}
+
+TEST_P(WindowTest, PlaceAt_AfterTheOrdersLeft_NewPositionsAreEmpty) {
+    window_.remove(addNode(side_, 3, 100));
+    window_.remove(addNode(other_, 6, 100));
+
+    window_.placeAt(1'000);
+
+    for (std::size_t position {0}; position < SIZE; ++position)
+        expectLevel(position, {}, 0);
+    EXPECT_EQ(bestAt(window_, side_), NONE);
+    EXPECT_EQ(bestAt(window_, other_), NONE);
+}
+
+TEST_P(WindowTest, PlaceAt_ThenAdd_OrdersGoToTheNewPositions) {
+    window_.placeAt(1'000);
+    OrderNode node(Order(1, OWNER, OrderType::GTC, side_, 1'015, 40));
+    OrderNode otherNode(Order(2, OWNER, OrderType::GTC, other_, 1'030, 10));
+
+    place(window_, &node);
+    place(window_, &otherNode);
+
+    EXPECT_EQ(node.level, &window_.level(3).queue);
+    EXPECT_EQ(otherNode.level, &window_.level(6).queue);
+    EXPECT_EQ(walk(window_, side_), (Positions {3}));
+    EXPECT_EQ(walk(window_, other_), (Positions {6}));
+
+    window_.remove(&node);
+    window_.remove(&otherNode);
+}
+
+// --------------------------
+// Holds
+// --------------------------
+TEST_P(WindowTest, Holds_NodeOfTheWindow_IsTrueAtEveryPosition) {
+    for (std::size_t position {0}; position < SIZE; ++position) {
+        OrderNode* node = addNode(side_, position, 10);
+        EXPECT_TRUE(window_.holds(node)) << "position " << position;
+    }
+}
+
+TEST_P(WindowTest, Holds_NodeOfAnotherWindowOrOfNoLevel_IsFalse) {
+    Window other(TICK, BASE_PRICE, SIZE);
+    OrderNode inOther(Order(1, OWNER, OrderType::GTC, side_, BASE_PRICE, 10));
+    place(other, &inOther);
+    OrderNode unplaced(Order(2, OWNER, OrderType::GTC, side_, BASE_PRICE, 10));
+    Level elsewhere;
+    OrderNode onTheStack(Order(3, OWNER, OrderType::GTC, side_, BASE_PRICE, 10));
+    onTheStack.levelData = &elsewhere.data;
+
+    EXPECT_FALSE(window_.holds(&inOther));
+    EXPECT_FALSE(window_.holds(&unplaced));
+    EXPECT_FALSE(window_.holds(&onTheStack));
+
+    other.remove(&inOther);
+}
+
+TEST_P(WindowTest, Holds_MovedFromWindow_IsFalse) {
+    OrderNode* node = addNode(side_, 2, 10);
+    Window target(std::move(window_));
+
+    EXPECT_TRUE(target.holds(node));
+    EXPECT_FALSE(window_.holds(node));
+}
+
+// --------------------------
 // Add
 // --------------------------
 TEST_P(WindowTest, Add_FirstOrder_LevelHoldsOnlyIt) {
