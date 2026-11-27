@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -23,6 +26,10 @@ struct RunCounts {
     std::size_t cancelledOldest {0};
     std::size_t rejected {0};
     std::size_t mostOrders {0};
+    // The middle of the prices, in ticks, as far as it went down and up, and the total it travelled
+    Price lowestMiddle {0};
+    Price highestMiddle {0};
+    std::int64_t travelled {0};
 };
 
 // Owners 1 to OWNERS, so that some trades would be with themselves
@@ -37,6 +44,8 @@ struct RunConfig {
     unsigned seed;
     // Orders mostly rest away from the other side, so the book fills up
     bool large {false};
+    // The most ticks the middle moves in a step, in a trend that flips now and then. 0 keeps it still
+    Price driftTicks {0};
 };
 
 class RandomRun {
@@ -47,6 +56,8 @@ private:
     std::mt19937 generator_;
     OwnerID nextOwner_ {1};
     RunCounts counts_;
+    Price middle_;
+    Price trend_ {1};
 
     template<typename Number>
     Number pick(Number from, Number to) {
@@ -66,11 +77,31 @@ private:
         return (config_.owners == 0) ? nextOwner_++ : pick<OwnerID>(1, config_.owners);
     }
 
+    // A random walk of long trends, kept far enough from the band for the cluster and the gap
+    void moveMiddle() {
+        Price tick = config_.book.tickSize;
+        Price margin = config_.clusterTicks + config_.gapTicks;
+        Price lowest = config_.book.minPrice / tick + margin;
+        Price highest = config_.book.maxPrice / tick - margin;
+        Price before = middle_;
+
+        if (chance(1)) trend_ = -trend_;
+        middle_ += trend_ * pick<Price>(0, config_.driftTicks);
+        if (middle_ < lowest || middle_ > highest) {
+            middle_ = std::clamp(middle_, lowest, highest);
+            trend_ = -trend_;
+        }
+
+        counts_.travelled += std::abs(middle_ - before);
+        counts_.lowestMiddle = std::min(counts_.lowestMiddle, middle_);
+        counts_.highestMiddle = std::max(counts_.highestMiddle, middle_);
+    }
+
     Price pickPrice(Side side, bool anywhere) {
         Price tick = config_.book.tickSize;
         Price low = config_.book.minPrice / tick;
         Price high = config_.book.maxPrice / tick;
-        Price middle = (low + high) / 2;
+        Price middle = (config_.driftTicks == 0) ? low + (high - low) / 2 : middle_;
 
         int roll = anywhere ? 99 : pick(0, 99);
         int inCluster = config_.large ? 10 : 70;
@@ -159,7 +190,9 @@ private:
 
     // The checks of the state after it see that nothing changed
     void sendSomethingIllegal() {
-        Price price = chance(50) ? config_.book.maxPrice + config_.book.tickSize : 0;
+        // Above the band, unless that would overflow
+        bool canGoAbove = config_.book.maxPrice <= std::numeric_limits<Price>::max() - config_.book.tickSize;
+        Price price = (chance(50) && canGoAbove) ? config_.book.maxPrice + config_.book.tickSize : 0;
         ASSERT_THROW(book_.addOrder(1, OrderType::GTC, pickSide(), price, 1), std::invalid_argument);
         ASSERT_THROW(book_.addOrder(1, OrderType::GTC, pickSide(), config_.book.minPrice, 0), std::invalid_argument);
         ASSERT_THROW(book_.addMarketOrder(1, pickSide(), 0), std::invalid_argument);
@@ -187,6 +220,8 @@ private:
     }
 
     void step() {
+        if (config_.driftTicks != 0) moveMiddle();
+
         // A large book gets fewer market orders, cancels and modifies
         int roll = (config_.large && chance(75)) ? 0 : pick(0, 999);
         if (roll < 550) addOrder();
@@ -242,8 +277,12 @@ private:
 
 public:
     explicit RandomRun(const RunConfig& config)
-        : config_ {config}, book_(config.book), generator_(config.seed)
-    {}
+        : config_ {config}, book_(config.book), generator_(config.seed),
+          middle_ {config.book.minPrice / config.book.tickSize + (config.book.maxPrice / config.book.tickSize - config.book.minPrice / config.book.tickSize) / 2}
+    {
+        counts_.lowestMiddle = middle_;
+        counts_.highestMiddle = middle_;
+    }
 
     void run() {
         constexpr std::size_t STEPS = 20'000;
@@ -264,7 +303,7 @@ public:
 };
 
 TEST(RandomTest, DefaultBandWithAClusterAndFarOutliers_MatchesTheReference) {
-    RandomRun run({BookConfig {}, 15, 400, 0, 12345});
+    RandomRun run({BookConfig {1, 1, 100'000}, 15, 400, 0, 12345});
 
     run.run();
 
@@ -295,7 +334,7 @@ TEST(RandomTest, BandOfAMillionPrices_MatchesTheReference) {
 }
 
 TEST(RandomTest, FewOwnersThatSelfTrade_MatchesTheReference) {
-    RandomRun run({BookConfig {}, 15, 400, OWNERS, 99});
+    RandomRun run({BookConfig {1, 1, 100'000}, 15, 400, OWNERS, 99});
 
     run.run();
 
@@ -326,4 +365,79 @@ TEST(RandomTest, LargeBookWithSelfTrades_MatchesTheReference) {
     EXPECT_GT(run.counts().trades, 1'000u);
     EXPECT_GT(run.counts().cancelledNewest, 10u);
     EXPECT_GT(run.counts().cancelledOldest, 10u);
+}
+
+// The window has to move many times: the middle travels far, with a small window
+
+TEST(RandomTest, WindowOf64WithADrift_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 10'000'000, SelfTradePolicy::cancelNewest, 64}, 15, 400, 0, 31337, false, 100});
+
+    run.run();
+
+    EXPECT_GE(run.counts().highestMiddle - run.counts().lowestMiddle, 50 * 64);
+    EXPECT_GE(run.counts().travelled, 1'000 * 64);
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().killedOrders, 50u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+}
+
+TEST(RandomTest, WindowOf1024WithADrift_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 10'000'000, SelfTradePolicy::cancelNewest, 1'024}, 15, 400, 0, 4242, false, 1'000});
+
+    run.run();
+
+    EXPECT_GE(run.counts().highestMiddle - run.counts().lowestMiddle, 50 * 1'024);
+    EXPECT_GE(run.counts().travelled, 1'000 * 1'024);
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+}
+
+TEST(RandomTest, WindowOf64WithADriftAndSelfTrades_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 10'000'000, SelfTradePolicy::cancelNewest, 64}, 15, 400, OWNERS, 5150, false, 100});
+
+    run.run();
+
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().cancelledNewest, 200u);
+    EXPECT_GT(run.counts().cancelledOldest, 200u);
+}
+
+TEST(RandomTest, LargeBookWithAWindowOf64AndADrift_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 10'000'000, SelfTradePolicy::cancelNewest, 64}, 15, 20, 0, 6060, true, 100});
+
+    run.run();
+
+    EXPECT_GT(run.counts().mostOrders, 5'000u);
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+}
+
+TEST(RandomTest, WindowOf64WithATickOfFive_MatchesTheReference) {
+    RandomRun run({BookConfig {5, 5, 50'000'000, SelfTradePolicy::cancelNewest, 64}, 15, 400, 0, 7070, false, 100});
+
+    run.run();
+
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+}
+
+TEST(RandomTest, WindowOfOneWithADrift_MatchesTheReference) {
+    RandomRun run({BookConfig {1, 1, 10'000'000, SelfTradePolicy::cancelNewest, 1}, 15, 400, 0, 1111, false, 10});
+
+    run.run();
+
+    EXPECT_GE(run.counts().highestMiddle - run.counts().lowestMiddle, 50);
+    EXPECT_GE(run.counts().travelled, 1'000);
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+}
+
+TEST(RandomTest, DefaultBandWithAWindowOf64AndADrift_MatchesTheReference) {
+    RandomRun run({BookConfig {.windowSize = 64}, 15, 400, 0, 2718, false, 100});
+
+    run.run();
+
+    EXPECT_GT(run.counts().trades, 1'000u);
+    EXPECT_GT(run.counts().movedOrders, 100u);
+    EXPECT_GT(run.counts().rejected, 100u);
 }

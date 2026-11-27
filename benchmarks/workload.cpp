@@ -23,9 +23,7 @@ OrderSpecs generateWorkload(uint64_t count, uint32_t seed) {
     std::uniform_int_distribution<Quantity> qtyDist(MIN_QUANTITY, MAX_QUANTITY);
     std::uniform_real_distribution<double> sideDist(0.0, 1.0);
 
-    // Owners come from their own generator so that adding them does not shift the
-    // sequence of types, sides, prices and quantities drawn from rng above: the
-    // workload stays identical to the one behind the committed benchmark results.
+    // Own generator for owners, so the rest of the workload matches the committed results
     std::mt19937 ownerRng(seed + 1);
     std::uniform_int_distribution<OwnerID> ownerDist(MIN_OWNER, MAX_OWNER);
 

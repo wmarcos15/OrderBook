@@ -324,9 +324,7 @@ TEST(OrderTableTest, InsertAndErase_AroundAnOldOrder_ItsPageAndOneSpareAreKept) 
 TEST(OrderTableTest, SlidingWindow_EightLiveOrders_PageCountStaysBounded) {
     constexpr OrderID WINDOW = 8;
     constexpr OrderID LAST = 1000;
-    // Insert happens before erase, so up to 9 consecutive IDs are live.
-    // 9 consecutive IDs span at most 3 pages of 4 (1 + 4 + 4), and a page is only
-    // allocated when no spare is left, so the total never exceeds 3.
+    // Up to 9 consecutive IDs are live, which span at most 3 pages of 4
     constexpr std::size_t MAX_PAGES = 3;
     SmallTable table;
     Ids ids;

@@ -1,10 +1,12 @@
 add_executable(orderbook_tests
     bitmap_test.cpp
     side_index_test.cpp
-    ladder_test.cpp
+    window_test.cpp
+    price_levels_test.cpp
     order_queue_test.cpp
     order_table_test.cpp
     pool_test.cpp
+    node_pool_test.cpp
     book_config_test.cpp
     add_order_test.cpp
     cancel_order_test.cpp
@@ -15,6 +17,7 @@ add_executable(orderbook_tests
     self_trade_test.cpp
     depth_test.cpp
     price_band_test.cpp
+    price_window_test.cpp
     moved_book_test.cpp
     random_test.cpp
     allocation_test.cpp

@@ -5,10 +5,11 @@
 #include "pool.hpp"
 #include "order_queue.hpp"
 #include "order_table.hpp"
-#include "ladder.hpp"
+#include "price_levels.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -18,8 +19,9 @@ namespace orderbook {
 struct BookConfig {
     Price tickSize {1};
     Price minPrice {1};
-    Price maxPrice {100'000};
+    Price maxPrice {std::numeric_limits<Price>::max()};
     SelfTradePolicy defaultSelfTradePolicy {SelfTradePolicy::cancelNewest};
+    std::size_t windowSize {65'536};
 };
 
 // One price level as getDepth reports it
@@ -35,35 +37,42 @@ private:
 
     OrderID nextID_ {1};
 
-    // Declared before the ladder and the table that point into it, so it is destroyed last
+    // Declared before the levels and the table that point into it, so it is destroyed last
     detail::Pool<detail::OrderNode> pool_;
 
-    detail::Ladder ladder_;
+    detail::PriceLevels levels_;
     detail::OrderTable<> orders_;
 
     static constexpr std::size_t DEPTH_RESERVE = 32;
 
-    // Runs before the ladder is built
-    static BookConfig validated(const BookConfig& config);
+    // Runs before the levels are built
+    static BookConfig validated(BookConfig config);
 
     [[noreturn]] void rejectPrice(Price price) const;
 
+    bool isLegal(Price price) const;
+    void requireLegal(Price price) const;
+
     template<Side opposite>
-    static bool isBeyond(std::size_t position, std::size_t limit) {
-        if constexpr (opposite == Side::sell) return position > limit;
-        else return position < limit;
+    static bool isBeyond(Price price, Price limit) {
+        if constexpr (opposite == Side::sell) return price > limit;
+        else return price < limit;
     }
 
-    std::size_t positionWithOrders(Side side, Price price) const;
+    OrderResult addAt(OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
 
-    OrderResult addAt(std::size_t position, OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
-
-    bool match(Order& incoming, std::size_t limit, OrderResult& result);
-    bool matchTop(Order& incoming, std::size_t best, OrderResult& result);
-    bool canFullyFill(const Order& order, std::size_t limit, OrderResult& result) const;
+    bool match(Order& incoming, Price limit, OrderResult& result);
+    bool matchTop(Order& incoming, const detail::PriceLevels::Cursor& best, OrderResult& result);
+    bool canFullyFill(const Order& order, Price limit, OrderResult& result) const;
 
     // Gives the order a slot and an entry in the table. If it throws, nothing has changed.
     detail::OrderNode* store(const Order& order);
+
+    // Undoes store
+    void unstore(detail::OrderNode* node);
+
+    // Puts the order in the book. If it throws, nothing has changed.
+    void rest(const Order& order);
 
     // Takes a resting order out of the book. The node is dead after this.
     void removeNode(detail::OrderNode* node);
@@ -71,11 +80,16 @@ private:
     std::unordered_map<OwnerID, SelfTradePolicy> policies_;
 
     template<Side opposite>
-    bool matchAgainst(Order& incoming, std::size_t limit, OrderResult& result) {
+    [[gnu::always_inline]] bool matchAgainst(Order& incoming, Price limit, OrderResult& result) {
+        detail::PriceLevels::Cursor best = levels_.best<opposite>();
         while (incoming.getRemainingQuantity() > 0) {
-            std::size_t best = ladder_.best<opposite>();
-            if (best == detail::Ladder::NONE || isBeyond<opposite>(best, limit)) break;
+            if (best.level == nullptr || isBeyond<opposite>(best.price, limit)) break;
+
+            bool isLastOrder = best.level->queue.head->next == nullptr;
             if (!matchTop(incoming, best, result)) return false;
+
+            // Only an emptied level has a new best, and it can be gone from its map
+            if (isLastOrder) best = levels_.best<opposite>();
         }
 
         return true;
@@ -83,16 +97,16 @@ private:
 
     // Walks single orders, not level totals: what counts depends on who owns each one
     template<Side opposite>
-    bool canFullyFillAgainst(const Order& order, std::size_t limit, OrderResult& result) const {
+    bool canFullyFillAgainst(const Order& order, Price limit, OrderResult& result) const {
         Quantity qty = order.getRemainingQuantity();
         OwnerID owner = order.getOwnerID();
         bool stopAtOwn = getSelfTradePolicy(owner) == SelfTradePolicy::cancelNewest;
 
-        for (std::size_t position = ladder_.best<opposite>();
-             position != detail::Ladder::NONE && !isBeyond<opposite>(position, limit);
-             position = ladder_.after<opposite>(position)) {
+        for (detail::PriceLevels::Cursor cursor = levels_.best<opposite>();
+             cursor.level != nullptr && !isBeyond<opposite>(cursor.price, limit);
+             cursor = levels_.after<opposite>(cursor)) {
 
-            for (const detail::OrderNode* node = ladder_.level(position).queue.head; node != nullptr; node = node->next) {
+            for (const detail::OrderNode* node = cursor.level->queue.head; node != nullptr; node = node->next) {
                 const Order& resting = node->order;
                 if (resting.getOwnerID() == owner) {
                     if (!stopAtOwn) continue;
@@ -113,12 +127,12 @@ private:
         // min: levels can be far larger than the side, and reserve would try to allocate it all
         depth.reserve(std::min(levels, DEPTH_RESERVE));
 
-        for (std::size_t position = ladder_.best<side>();
-             position != detail::Ladder::NONE && depth.size() < levels;
-             position = ladder_.after<side>(position)) {
+        for (detail::PriceLevels::Cursor cursor = levels_.best<side>();
+             cursor.level != nullptr && depth.size() < levels;
+             cursor = levels_.after<side>(cursor)) {
 
-            const detail::LevelData& data = ladder_.level(position).data;
-            depth.push_back({ ladder_.priceOf(position), data.qty_, data.count_ });
+            const detail::LevelData& data = cursor.level->data;
+            depth.push_back({ cursor.price, data.qty_, data.count_ });
         }
         return depth;
     }
@@ -132,7 +146,7 @@ public:
     OrderBook(OrderBook&&) = default;
     OrderBook& operator=(OrderBook&& other) noexcept;
 
-    std::size_t size() const; // total order count
+    std::size_t size() const;
     const Order* getBestBid() const;
     const Order* getBestAsk() const;
     bool empty() const;

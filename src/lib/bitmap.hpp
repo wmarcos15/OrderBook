@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <bit>
 #include <cassert>
 #include <cstddef>
@@ -13,6 +14,7 @@ class Bitmap {
 private:
     static constexpr std::size_t WORD_BITS = 64;
 
+    std::size_t positions_;
     std::vector<std::uint64_t> words_;
     // One bit per word of words_, on if and only if that word is not 0
     std::vector<std::uint64_t> summary_;
@@ -64,10 +66,18 @@ private:
         return index * WORD_BITS + (WORD_BITS - 1 - static_cast<std::size_t>(std::countl_zero(word)));
     }
 
+    void rebuildSummary() noexcept {
+        std::fill(summary_.begin(), summary_.end(), 0);
+        for (std::size_t word {0}; word < words_.size(); ++word) {
+            if (words_[word] != 0) summary_[wordOf(word)] |= maskOf(word);
+        }
+    }
+
 public:
     static constexpr std::size_t NONE = std::numeric_limits<std::size_t>::max();
 
-    explicit Bitmap(std::size_t positions) : words_(wordsFor(positions)), summary_(wordsFor(words_.size())) {}
+    explicit Bitmap(std::size_t positions)
+        : positions_ {positions}, words_(wordsFor(positions)), summary_(wordsFor(words_.size())) {}
 
     void set(std::size_t position) {
         assert(wordOf(position) < words_.size());
@@ -83,6 +93,71 @@ public:
 
         if (words_[word] == 0)
             summary_[wordOf(word)] &= ~maskOf(word);
+    }
+
+    void dropFront(std::size_t n) noexcept {
+        if (n == 0) return;
+        // A moved-from bitmap keeps its size but has no words
+        if (n >= positions_ || words_.empty()) {
+            std::fill(words_.begin(), words_.end(), 0);
+            std::fill(summary_.begin(), summary_.end(), 0);
+            return;
+        }
+
+        std::size_t wordShift = n / WORD_BITS;
+        std::size_t bitShift = n % WORD_BITS;
+        std::size_t count = words_.size();
+
+        // Forwards: every word is read before it is written
+        for (std::size_t word {0}; word < count; ++word) {
+            std::size_t source = word + wordShift;
+            std::uint64_t low = (source < count) ? words_[source] : 0;
+            std::uint64_t high = (source + 1 < count) ? words_[source + 1] : 0;
+            // A shift by 64 would be undefined
+            words_[word] = (bitShift == 0) ? low : (low >> bitShift) | (high << (WORD_BITS - bitShift));
+        }
+
+        rebuildSummary();
+    }
+
+    void dropBack(std::size_t n) noexcept {
+        if (n == 0) return;
+        // A moved-from bitmap keeps its size but has no words
+        if (n >= positions_ || words_.empty()) {
+            std::fill(words_.begin(), words_.end(), 0);
+            std::fill(summary_.begin(), summary_.end(), 0);
+            return;
+        }
+
+        std::size_t wordShift = n / WORD_BITS;
+        std::size_t bitShift = n % WORD_BITS;
+
+        // Backwards: every word is read before it is written
+        for (std::size_t word = words_.size(); word-- > 0;) {
+            if (word < wordShift) {
+                words_[word] = 0;
+                continue;
+            }
+            std::size_t source = word - wordShift;
+            std::uint64_t high = words_[source];
+            std::uint64_t low = (source > 0) ? words_[source - 1] : 0;
+            words_[word] = (bitShift == 0) ? high : (high << bitShift) | (low >> (WORD_BITS - bitShift));
+        }
+
+        // Bits pushed past the last position would be found by next
+        if (bitOf(positions_) != 0)
+            words_.back() &= maskOf(positions_) - 1;
+
+        rebuildSummary();
+    }
+
+    std::size_t lowest() const noexcept {
+        return next(0);
+    }
+
+    std::size_t highest() const noexcept {
+        if (words_.empty()) return NONE;
+        return previous(words_.size() * WORD_BITS - 1);
     }
 
     bool test(std::size_t position) const {

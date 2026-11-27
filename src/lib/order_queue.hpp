@@ -66,4 +66,9 @@ struct OrderQueue {
     }
 };
 
+struct Level {
+    OrderQueue queue;
+    LevelData data;
+};
+
 } // namespace orderbook::detail

@@ -26,6 +26,11 @@ private:
         else return bitmap_.next(position);
     }
 
+    std::size_t findBest() const noexcept {
+        if constexpr (side == Side::buy) return bitmap_.highest();
+        else return bitmap_.lowest();
+    }
+
 public:
     static constexpr std::size_t NONE = Bitmap::NONE;
 
@@ -75,6 +80,16 @@ public:
         bitmap_.clear(position);
 
         if (position == best_) best_ = search(position);
+    }
+
+    void dropFront(std::size_t n) noexcept {
+        bitmap_.dropFront(n);
+        best_ = findBest();
+    }
+
+    void dropBack(std::size_t n) noexcept {
+        bitmap_.dropBack(n);
+        best_ = findBest();
     }
 };
 

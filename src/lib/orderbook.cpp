@@ -5,16 +5,31 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <bit>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace orderbook {
 
-// Runs before the ladder is built
-BookConfig OrderBook::validated(const BookConfig& config) {
+static std::string nearestPowersOfTwo(std::size_t size) {
+    std::size_t below = std::bit_floor(size);
+
+    // Doubling the largest power of two would wrap around
+    if (below > std::numeric_limits<std::size_t>::max() / 2)
+        return "the nearest is " + std::to_string(below);
+    return "the nearest are " + std::to_string(below) + " and " + std::to_string(below * 2);
+}
+
+BookConfig OrderBook::validated(BookConfig config) {
     if (config.tickSize <= 0)
         throw std::invalid_argument("tickSize must be greater than 0");
+
+    // The default is the largest Price, which is rarely on the tick
+    if (config.maxPrice == std::numeric_limits<Price>::max())
+        config.maxPrice -= config.maxPrice % config.tickSize;
+
     if (config.minPrice <= 0)
         throw std::invalid_argument("minPrice must be greater than 0");
     if (config.minPrice > config.maxPrice)
@@ -29,13 +44,19 @@ BookConfig OrderBook::validated(const BookConfig& config) {
             "minPrice (" + std::to_string(config.minPrice) +
             ") must be a multiple of tickSize (" + std::to_string(config.tickSize) +
             "); set minPrice and maxPrice to multiples of the tick");
+    if (config.windowSize == 0)
+        throw std::invalid_argument("windowSize must be greater than 0");
+    if (!std::has_single_bit(config.windowSize))
+        throw std::invalid_argument(
+            "windowSize (" + std::to_string(config.windowSize) +
+            ") must be a power of two; " + nearestPowersOfTwo(config.windowSize));
 
     return config;
 }
 
 OrderBook::OrderBook(BookConfig config)
     : config_(validated(config)),
-    ladder_(config_.minPrice, config_.maxPrice, config_.tickSize) {}
+    levels_(config_.tickSize, config_.minPrice, config_.maxPrice, config_.windowSize) {}
 
 // Moving a vector onto itself may empty it, so it is checked here for every member
 OrderBook& OrderBook::operator=(OrderBook&& other) noexcept {
@@ -43,7 +64,7 @@ OrderBook& OrderBook::operator=(OrderBook&& other) noexcept {
         config_ = other.config_;
         nextID_ = other.nextID_;
         pool_ = std::move(other.pool_);
-        ladder_ = std::move(other.ladder_);
+        levels_ = std::move(other.levels_);
         orders_ = std::move(other.orders_);
         policies_ = std::move(other.policies_);
     }
@@ -56,41 +77,31 @@ std::size_t OrderBook::size() const {
 }
 
 const Order* OrderBook::getBestBid() const {
-    std::size_t best = ladder_.best<Side::buy>();
-    if (best == detail::Ladder::NONE) return nullptr;
-    return &ladder_.level(best).queue.head->order;
+    detail::PriceLevels::Cursor best = levels_.best<Side::buy>();
+    if (best.level == nullptr) return nullptr;
+    return &best.level->queue.head->order;
 }
 
 const Order* OrderBook::getBestAsk() const {
-    std::size_t best = ladder_.best<Side::sell>();
-    if (best == detail::Ladder::NONE) return nullptr;
-    return &ladder_.level(best).queue.head->order;
+    detail::PriceLevels::Cursor best = levels_.best<Side::sell>();
+    if (best.level == nullptr) return nullptr;
+    return &best.level->queue.head->order;
 }
 
 bool OrderBook::empty() const {
     return pool_.size() == 0;
 }
 
-// The level is shared, so check the side's index first
-std::size_t OrderBook::positionWithOrders(Side side, Price price) const {
-    std::size_t position = ladder_.positionOf(price);
-    if (position == detail::Ladder::NONE) return detail::Ladder::NONE;
-
-    bool hasOrders = (side == Side::buy) ? ladder_.contains<Side::buy>(position)
-                                         : ladder_.contains<Side::sell>(position);
-    return hasOrders ? position : detail::Ladder::NONE;
-}
-
 Quantity OrderBook::getLevelQuantity(Side side, Price price) const {
-    std::size_t position = positionWithOrders(side, price);
-    if (position == detail::Ladder::NONE) return 0;
-    return ladder_.level(position).data.qty_;
+    const detail::Level* level = levels_.levelOf(side, price);
+    if (level == nullptr) return 0;
+    return level->data.qty_;
 }
 
 std::size_t OrderBook::getLevelCount(Side side, Price price) const {
-    std::size_t position = positionWithOrders(side, price);
-    if (position == detail::Ladder::NONE) return 0;
-    return ladder_.level(position).data.count_;
+    const detail::Level* level = levels_.levelOf(side, price);
+    if (level == nullptr) return 0;
+    return level->data.count_;
 }
 
 // O(levels returned)
@@ -131,13 +142,23 @@ void OrderBook::rejectPrice(Price price) const {
     throw std::logic_error("the book has been moved from");
 }
 
-bool OrderBook::match(Order& incoming, std::size_t limit, OrderResult& result) {
+// In this order, so that the comparisons cannot overflow
+[[gnu::always_inline]] bool OrderBook::isLegal(Price price) const {
+    return config_.minPrice <= price && price <= config_.maxPrice && price % config_.tickSize == 0;
+}
+
+// A moved-from book has no levels, so it rejects every price
+[[gnu::always_inline]] void OrderBook::requireLegal(Price price) const {
+    if (!isLegal(price) || !levels_.hasSlots()) rejectPrice(price);
+}
+
+[[gnu::always_inline]] bool OrderBook::match(Order& incoming, Price limit, OrderResult& result) {
     if (incoming.getSide() == Side::buy) return matchAgainst<Side::sell>(incoming, limit, result);
     return matchAgainst<Side::buy>(incoming, limit, result);
 }
 
-bool OrderBook::matchTop(Order& incoming, std::size_t best, OrderResult& result) {
-    detail::OrderNode* resting = ladder_.level(best).queue.head;
+bool OrderBook::matchTop(Order& incoming, const detail::PriceLevels::Cursor& best, OrderResult& result) {
+    detail::OrderNode* resting = best.level->queue.head;
 
     if (resting->order.getOwnerID() == incoming.getOwnerID()) {
         if (getSelfTradePolicy(incoming.getOwnerID()) == SelfTradePolicy::cancelNewest) {
@@ -158,50 +179,47 @@ bool OrderBook::matchTop(Order& incoming, std::size_t best, OrderResult& result)
     OrderID askID = incomingIsBuy ? resting->order.getID() : incoming.getID();
     OwnerID bidOwner = incomingIsBuy ? incoming.getOwnerID() : resting->order.getOwnerID();
     OwnerID askOwner = incomingIsBuy ? resting->order.getOwnerID() : incoming.getOwnerID();
-    result.trades.push_back({ bidID, askID, ladder_.priceOf(best), qty, bidOwner, askOwner });
+    result.trades.push_back({ bidID, askID, best.price, qty, bidOwner, askOwner });
 
     // After the push, which can throw
     incoming.fill(qty);
-    ladder_.fill(resting, qty);
+    levels_.fill(resting, qty);
 
     if (resting->order.isFilled()) removeNode(resting);
     return true;
 }
 
 // O(n) so that updates can be O(1)
-bool OrderBook::canFullyFill(const Order& order, std::size_t limit, OrderResult& result) const {
+bool OrderBook::canFullyFill(const Order& order, Price limit, OrderResult& result) const {
     if (order.getSide() == Side::buy) return canFullyFillAgainst<Side::sell>(order, limit, result);
     return canFullyFillAgainst<Side::buy>(order, limit, result);
 }
 
 OrderResult OrderBook::addOrder(OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
-    std::size_t position = ladder_.positionOf(price);
-    if (position == detail::Ladder::NONE) rejectPrice(price);
+    requireLegal(price);
     if (qty == 0)
         throw std::invalid_argument("quantity must be greater than zero");
 
-    return addAt(position, owner, type, side, price, qty);
+    return addAt(owner, type, side, price, qty);
 }
 
-OrderResult OrderBook::addAt(std::size_t position, OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
+OrderResult OrderBook::addAt(OwnerID owner, OrderType type, Side side, Price price, Quantity qty) {
     OrderID id = nextID_++;
     Order incoming(id, owner, type, side, price, qty);
 
     OrderResult result {id, {}};
 
-    if (type == OrderType::FOK && !canFullyFill(incoming, position, result))
+    if (type == OrderType::FOK && !canFullyFill(incoming, price, result))
         return result;
 
-    if (!match(incoming, position, result))
+    if (!match(incoming, price, result))
         return result;
 
     if (type == OrderType::IOC && !incoming.isFilled())
         return result;
 
-    if (!incoming.isFilled()) {
-        // Only now: an order that never rests allocates nothing
-        ladder_.add(position, store(incoming));
-    }
+    // Only now: an order that never rests allocates nothing
+    if (!incoming.isFilled()) rest(incoming);
 
     return result;
 }
@@ -212,12 +230,11 @@ OrderResult OrderBook::addMarketOrder(OwnerID owner, Side side, Quantity qty) {
 
     // An IOC never rests, so the band edge works as the worst price
     Price price = (side == Side::buy) ? config_.maxPrice : config_.minPrice;
-    std::size_t position = ladder_.positionOf(price);
-    if (position == detail::Ladder::NONE) rejectPrice(price);
-    return addAt(position, owner, OrderType::IOC, side, price, qty);
+    requireLegal(price);
+    return addAt(owner, OrderType::IOC, side, price, qty);
 }
 
-detail::OrderNode* OrderBook::store(const Order& order) {
+[[gnu::always_inline]] detail::OrderNode* OrderBook::store(const Order& order) {
     detail::OrderNode* node = pool_.allocate(order);
     try {
         orders_.insert(order.getID(), node);
@@ -228,12 +245,27 @@ detail::OrderNode* OrderBook::store(const Order& order) {
     return node;
 }
 
-void OrderBook::removeNode(detail::OrderNode* node) {
-    OrderID orderID = node->order.getID();
-
-    ladder_.remove(node);
-    orders_.erase(orderID);
+[[gnu::always_inline]] void OrderBook::unstore(detail::OrderNode* node) {
+    orders_.erase(node->order.getID());
     pool_.release(node);   // last: nothing reads the node after this
+}
+
+[[gnu::always_inline]] void OrderBook::rest(const Order& order) {
+    // The window may move, so the position comes after
+    std::size_t position = levels_.prepareFor(order.getSide(), order.getPrice());
+    detail::OrderNode* node = store(order);
+
+    try {
+        levels_.add(node, position);
+    } catch (...) {
+        unstore(node);
+        throw;
+    }
+}
+
+[[gnu::always_inline]] void OrderBook::removeNode(detail::OrderNode* node) {
+    levels_.remove(node);
+    unstore(node);
 }
 
 void OrderBook::cancelOrder(OrderID orderID) {
@@ -253,8 +285,7 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     Price oldPrice = node->order.getPrice();
     Quantity oldQty = node->order.getRemainingQuantity();
 
-    std::size_t position = ladder_.positionOf(newPrice);
-    if (position == detail::Ladder::NONE) rejectPrice(newPrice);
+    requireLegal(newPrice);
     if (newQty == 0) 
         throw std::invalid_argument("quantity must be greater than zero");
 
@@ -264,19 +295,18 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
 
     // Friendly
     if (newPrice == oldPrice && newQty < oldQty) {
-        ladder_.fill(node, oldQty - newQty);
+        levels_.fill(node, oldQty - newQty);
         return OrderResult({orderID, {}});
     }
 
     // Unfriendly
     Order incoming(nextID_++, owner, type, side, newPrice, newQty);
     OrderResult result {incoming.getID(), {}};
-    detail::OrderNode* moved {nullptr};
 
     // Matching only touches the other side, so the original can stay until nothing can throw
     try {
-        if (match(incoming, position, result) && !incoming.isFilled())
-            moved = store(incoming);
+        if (match(incoming, newPrice, result) && !incoming.isFilled())
+            rest(incoming);
     } catch (...) {
         // It can only stay if it has not been replaced in part
         if (!result.trades.empty() || !result.cancelledOrders.empty()) removeNode(node);
@@ -284,7 +314,6 @@ std::optional<OrderResult> OrderBook::modifyOrder(OrderID orderID, Price newPric
     }
 
     removeNode(node);
-    if (moved != nullptr) ladder_.add(position, moved);
     return result;
 }
 
