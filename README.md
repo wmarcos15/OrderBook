@@ -3,7 +3,7 @@
 [![CI](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/wmarcos15/OrderBook/actions/workflows/ci.yml)
 
 A price-time priority limit order book and matching engine in C++20, with a
-GoogleTest suite (250+ tests) and a Google Benchmark suite that measures what
+GoogleTest suite (900+ tests) and a Google Benchmark suite that measures what
 each operation actually costs — and a worked example of using those
 measurements to decide what to change.
 
@@ -22,10 +22,11 @@ Single-threaded, Apple M2 Max, Release build. Both columns were measured back
 to back on 2026-11-25, the first on the v2.1.0 engine, which finds orders
 through a hash map, and the second on the engine with the order table, where
 an order's ID says where its pointer is. **The current engine is newer than
-these numbers**: the price levels have moved to a
-[ladder](#core-data-structures) since, and it has not been benchmarked for
-this page yet. That comparison, over every release, is
-[issue #22](https://github.com/wmarcos15/OrderBook/issues/22). The step before this one, the
+these numbers**: v2.3.0 keeps the price levels in a
+[moving window](#core-data-structures) instead of an array with one level per
+price, and is measured against v2.2.1 in
+[its own section](#results-the-price-window). A comparison over every release
+is [issue #22](https://github.com/wmarcos15/OrderBook/issues/22). The step before this one, the
 [order pool](#results-the-order-pool-and-intrusive-queues), had already taken
 29% off `addOrder` and 52% off `cancelOrder`; it was measured on another day,
 and only numbers from the same session compare. [Benchmarks](#benchmarks) has
@@ -59,9 +60,11 @@ the method, the matching-cost curves and a breakdown of where the time goes.
 - **Operations:** `addOrder`, `addMarketOrder`, `cancelOrder`, `modifyOrder`.
   Cancel and in-place quantity reduction are O(1), with no lookup by price
   except when a cancel empties its level.
-- **Configurable price grid.** A `BookConfig` sets the tick size and the
-  legal price band; prices off the tick or outside the band are rejected
-  before anything in the book changes.
+- **Configurable price grid.** A `BookConfig` sets the tick size, the legal
+  price band and the size of the window of price levels the book keeps around
+  the market. Prices off the tick or outside the band are rejected before
+  anything in the book changes; any other price is accepted, however far it is
+  from the market.
 - **Owner IDs.** Every order carries the `OwnerID` of whoever placed it, and
   every trade records the owner on each side, so fills can be attributed to
   both the aggressor and the resting order.
@@ -70,18 +73,18 @@ the method, the matching-cost curves and a breakdown of where the time goes.
   `cancelNewest` drops the incoming order, `cancelOldest` cancels the resting
   one and keeps matching. The book has a default policy and each owner can
   override it.
-- **O(1) depth queries** — `getLevelQuantity`, `getLevelCount` — from
-  per-level aggregates maintained incrementally, never by walking a level.
+- **Depth queries from aggregates** — `getLevelQuantity`, `getLevelCount` —
+  kept per level and maintained incrementally, never by walking a level.
 - **Depth snapshot.** `getDepth` returns the top N levels of a side in one
   call, best level first, each with its price, total quantity and order
   count.
-- **250+ unit tests**: book state (resting, level data, cancel, modify,
+- **900+ unit tests**: book state (resting, level data, cancel, modify,
   argument validation, book configuration, owners, depth snapshot, copy and
   move), matching semantics (GTC partial/full fills and sweeps, time priority,
   trade contents and owners, IOC, FOK, market orders, self-trade prevention),
   random runs against a simple reference book, and the internal structures the
   book is built on: the order pool, the intrusive queue, the order table, the
-  bitmap, the side index and the price ladder.
+  bitmap, the side index, the price window and the maps outside it.
 - **Benchmark suite** on Google Benchmark with a deterministic synthetic
   workload; results are committed alongside the script that plots them.
 
@@ -125,8 +128,8 @@ book.cancelOrder(bid.orderID);
 ```
 
 A book can also be created with a `BookConfig` that restricts which prices
-are legal. Every field has a default (tick 1, band 1–100 000), so
-`OrderBook book;` above uses those:
+are legal. Every field has a default (tick 1, band 1 to 2,147,483,647, a
+window of 65,536 prices), so `OrderBook book;` above uses those:
 
 ```cpp
 // Prices must be multiples of 5 between 9 000 and 11 000 (edges included).
@@ -137,6 +140,15 @@ book.addOrder(BOB, OrderType::GTC, Side::buy, 10'003, 10);   // throws: not on t
 book.addOrder(BOB, OrderType::GTC, Side::buy, 11'005, 10);   // throws: above maxPrice
 
 book.getBookConfig().tickSize;   // 5
+```
+
+The window is the part of the band the book keeps in an array. It does not
+limit which prices are legal, only how the book stores them, and the size must
+be a power of two:
+
+```cpp
+// A smaller window takes less memory, and moves more often.
+OrderBook small(BookConfig{.windowSize = 4'096});
 ```
 
 Self-trade prevention is on by default. The policy comes from
@@ -188,7 +200,11 @@ Semantics worth knowing:
   and returns a **new** ID; the old one is gone.
 - `addOrder` / `modifyOrder` throw `std::invalid_argument` on zero quantity,
   or on a price below `minPrice`, above `maxPrice`, or not a multiple of
-  `tickSize`. `addMarketOrder` throws on zero quantity too. A rejected
+  `tickSize`. Zero and negative prices are never legal. Any other price is, and
+  rests wherever it is: a price far from the market is stored in a map and
+  costs more than one inside the window (see
+  [The price window](#core-data-structures)). `addMarketOrder` throws on zero
+  quantity too. A rejected
   `addOrder` or `addMarketOrder` consumes no ID; a rejected `modifyOrder`
   leaves the original order exactly as it was.
 - An `OrderBook` cannot be copied, only moved. Its internal entries point
@@ -202,11 +218,18 @@ Semantics worth knowing:
   done neither, nothing has changed except that an ID may have been used.
 - The `OrderBook` constructor throws `std::invalid_argument` if the config is
   inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
-  `maxPrice`, or either band edge not a multiple of `tickSize`. `modifyOrder` returns `std::nullopt` for an unknown ID.
+  `maxPrice`, either band edge not a multiple of `tickSize`, or a `windowSize`
+  that is zero or not a power of two (the message names the nearest powers of
+  two). A `maxPrice` left at its default is the largest `Price`, rounded down
+  to the tick; one set by hand is checked as it is. `modifyOrder` returns `std::nullopt` for an unknown ID.
   `cancelOrder` on an unknown ID is a silent no-op.
 - A market order is converted internally to an `IOC` limit order at the edge
   of the price band, so it sweeps everything available and discards any
-  residual. Against an empty opposite side it returns an ID and no trades.
+  residual. With the default band that is any price up to the largest `Price`.
+  Against an empty opposite side it returns an ID and no trades. The book puts
+  no limit on how far a market order can reach: a collar is for whoever runs
+  the book to apply
+  ([issue #20](https://github.com/wmarcos15/OrderBook/issues/20)).
 - `FOK` is checked before touching the book, so a rejected FOK leaves the
   book untouched. It still consumes an order ID, which comes back in
   `OrderResult` alongside an empty trade list.
@@ -250,8 +273,19 @@ Semantics worth knowing:
 ```cpp
 detail::Pool<detail::OrderNode> pool_;    // every resting order lives in here
 
-detail::Ladder                  ladder_;  // one Level per legal price
+detail::PriceLevels             levels_;  // the window, and the levels outside it
 detail::OrderTable<>            orders_;  // ID -> OrderNode*
+
+class PriceLevels {
+    Window              window_;    // a ring of levels around the market
+    unique_ptr<Outside> outside_;   // everything beyond it
+};
+
+struct Outside {
+    NodePool nodes;                                    // where the maps' nodes come from
+    std::map<Price, Level, std::greater<Price>> bids;  // below the window
+    std::map<Price, Level, std::less<Price>>    asks;  // above the window
+};
 
 struct Level {                // everything about one price, 24 bytes
     OrderQueue queue;         // { head, tail }
@@ -267,20 +301,70 @@ struct OrderNode {            // one pool slot, 64 bytes: one cache line
 };
 ```
 
-**The price ladder.** `BookConfig` fixes the legal prices, so the ladder is an
-array with one `Level` for each of them, and `(price - minPrice) / tickSize` is
-its position. Nothing is searched, and a price that starts or stops being used
-allocates and frees nothing. Both sides share the array, since a price never
-holds buys and sells at once: they would have traded. Each level is a FIFO
-queue, so time priority is queue order, and its totals are updated on every
-add, fill, cancel and modify, which is what makes the level queries O(1).
+**The price window.** `BookConfig` fixes the legal prices, but the book does
+not keep a level for each of them. It keeps a ring of `Level`s, one for each of
+`windowSize` consecutive ticks around the market (65,536 by default). A price's
+tick is `price / tickSize`, its position in the window is `tick - base`, where
+`base` is the tick the window starts at, and the slot its level lives in is
+`tick & (size - 1)`, which is why the size is a power of two. Inside the window
+nothing is searched, and a price that starts or stops being used allocates and
+frees nothing. Slots depend only on the tick, so when the window moves, the
+levels that stay in it keep their slots. Both sides share the ring, since a
+price never holds buys and sells at once: they would have traded. Each level
+is a FIFO queue, so time priority is queue order, and its totals are updated
+on every add, fill, cancel and modify, which is what makes the level queries
+cheap.
+
+A band narrower than the window gets a window as wide as the band, rounded up
+to a power of two, starting at the band's start. It never moves and nothing is
+ever outside it. A band wider than the window costs no more memory than the
+window does.
 
 Each side has a bitmap that says at which positions it has orders, and
 remembers its best one. When the best level empties, the next one is the next
 bit that is on, found 64 positions at a time. A second, smaller bitmap says
 which 64-bit words are not zero, so a long gap is jumped instead of walked.
 Both bitmaps are updated only when a level gets its first order or loses its
-last one.
+last one, and when the window moves they move with it.
+
+**The levels outside.** A legal price outside the window rests like any other.
+Its level is an entry in one of two `std::map`s: the bids that are below the
+window and the asks that are above it. The rule is that no ask is below the
+window and no bid above it, and it is what makes each side one chain, the
+levels of the window from the best one on and then those of its map. Finding
+the best level, the next one, `getDepth`, the `FOK` check and a sweep all walk
+that chain, and matching compares prices, never positions.
+
+The maps take their nodes from a `NodePool`: chunks of 64 blocks, then 128,
+doubling up to 4096, never given back until the book is destroyed. A new far
+price allocates only when the pool has no free block, and a failed allocation
+leaves the pool as it was. It is our own pool because the standard one,
+`std::pmr::unsynchronized_pool_resource`, is not safe against a failing
+upstream allocation on GCC (the process terminates or the pool is corrupted),
+and a call that throws must leave the book unchanged. The pool and the maps sit
+behind one pointer, so moving the book never copies a node.
+
+**Moving the window.** The window follows the market, but not every order does.
+It moves only when an order that is about to rest is not behind the best of its
+side (or its side is empty) and lands outside the window or within an eighth of
+its size from either edge. It is then centred on the midpoint of the two best
+prices, or on the one best if the other side is empty, and kept inside the
+band. A best price that moves away by itself, because its orders were cancelled
+or filled, does not move the window, and neither does a market order or any
+order that does not rest.
+
+A move has two steps. First it makes a map entry for every level that leaves
+the window, which can allocate; if that fails, the entries already made are
+removed and nothing has changed. Then it moves the levels out, shifts the
+window and brings in the map entries that now fall inside it, and none of that
+can throw. Moving a level copies it and rewrites the pointers of each order in
+it, so it costs per order and per level. A move that pushes 56
+levels out, a typical book, takes about 1 µs; 1,060 levels take 33 µs, and
+32,768 levels, every slot of one side's half of the window, take 2.9 ms. A
+move where every slot leaves would need a market that jumps past both full
+sides, which cannot happen without them trading first. That is how it behaves today and it
+may change: a faster tree for the outside is
+[issue #38](https://github.com/wmarcos15/OrderBook/issues/38).
 
 **The pool.** A resting order is one `OrderNode` in a `Pool`. The pool asks
 the system for memory in chunks of 4096 slots, rarely, and hands the slots out
@@ -310,11 +394,12 @@ orders, and when it reaches zero the page goes to a pile of spare ones,
 already all null, for a later range of IDs to take. Adding an order therefore allocates nothing for
 its lookup, except for a new page when the pile is empty.
 
-The array of levels never grows, so a level never moves in memory and the
-node's `level` and `levelData` pointers stay valid. The result is that
-`cancelOrder` looks nothing up by price unless the level empties: it goes from
-the ID to the node, unlinks it through its own neighbours, and gives the slot
-back.
+The ring never grows and a map entry never moves, so a level stays where it is
+until a window move takes it out or brings it in, and the node's `level` and
+`levelData` pointers stay valid in between. The move rewrites them for the
+nodes of every level it relocates. The result is that `cancelOrder` looks
+nothing up by price unless the level empties: it goes from the ID to the node,
+unlinks it through its own neighbours, and gives the slot back.
 
 **Lifetimes are managed by hand.** The book owns an order from the moment it
 rests until it is filled or cancelled, and ownership is never shared, so
@@ -332,9 +417,11 @@ way.
 opposite side's best level is at or through its limit price. Each iteration
 fills against the front of the best level, records a `Trade{bidID, askID,
 price, quantity, bidOwner, askOwner}` at the resting price, and pops the resting order if it is
-now filled. An emptied level leaves its side's bitmap immediately, so the best
-position always has orders. The best level is compared with the limit by
-position, without turning either into a price.
+now filled. An emptied level leaves its side's bitmap, or its map, immediately,
+so the best level always has orders. The best level is compared with the limit
+by price, whether it is in the window or in a map, so a sweep goes from one to
+the other without noticing. Matching never moves the window: only an order that
+rests does.
 
 Before filling, each iteration compares the two owners. That one integer
 comparison is all a normal match pays for self-trade prevention; the policy
@@ -344,33 +431,52 @@ and lets the loop ask for the best level again.
 
 ### Complexity
 
-*W* is the number of 64-bit words in a side's summary bitmap: 25 for the
-default band of 100,000 prices. It only matters when a level empties and the
-next one is far away, and *W* depends on the width of the band, not on the
-number of orders.
+*W* is the number of 64-bit words in a side's summary bitmap: 16 for the
+default window of 65,536 prices. It only matters when a level empties and the
+next one is far away, and *W* depends on the size of the window, not on the
+number of orders. *F* is the number of levels in the map of a side, and *L* the
+number of levels that change place in a window move.
 
 | Operation | Complexity | Notes |
 |---|---|---|
-| `addOrder` | O(1) + matching | the position is computed from the price; each match iteration is O(1) |
-| `cancelOrder` | O(1) | table lookup, unlink through the node's own links, totals update via stored pointer |
+| `addOrder`, price in the window | O(1) + matching | the position is computed from the price; each match iteration is O(1) |
+| `addOrder`, new price outside | O(log *F*) + matching | one map entry, from the node pool |
+| A window move | O(*L* log *F*) | a map entry for each level that leaves, and one erased for each that comes in; the bitmaps are shifted |
+| `cancelOrder` | O(1) | table lookup, unlink through the node's own links, totals update via stored pointer; O(log *F*) more if it empties a level outside |
 | A level becomes empty | O(W) at worst | finding the next best level; O(1) if it is in the same word |
 | `modifyOrder` (qty down) | O(1) | table lookup, `fill()`, totals update via stored pointer |
 | `modifyOrder` (otherwise) | cancel + add | |
 | `canFullyFill` (FOK check) | O(orders in price range) | walks single orders, because what counts depends on who owns each one |
-| `getLevelQuantity` / `getLevelCount` | O(1) | position from the price, after checking that the side has orders there |
-| `getDepth` | O(levels returned) | walks the side's bitmap from the best position and reads each level's totals; never walks the orders. A long gap costs up to O(W) |
-| `getBestBid` / `getBestAsk` | O(1) | the stored best position |
+| `getLevelQuantity` / `getLevelCount` | O(1) in the window, O(log *F*) outside | position from the price, after checking that the side has orders there; a map search outside |
+| `getDepth` | O(levels returned) | walks the side's bitmap from the best position and reads each level's totals; never walks the orders. A long gap costs up to O(W), and each level outside costs O(log *F*) |
+| `getBestBid` / `getBestAsk` | O(1) | the stored best position, or the first entry of the map if the window holds none |
 | `getOrder` | O(1) | table lookup |
 
 ### Trade-offs
 
-**An array of levels, not a sorted map.** A `std::map` costs a search for every
-price and an allocation for every new one, and its cost does not depend on how
-wide the band is. The array costs a calculation, but it has a `Level` for every
-legal price whether it is used or not: 24 bytes each, about 2.4 MB for the
-default band and 24 MB for a million prices, taken when the book is created.
-There is no limit on the band, so a very wide one can take gigabytes. The band
-also has to be known in advance, and prices outside it are rejected.
+**A window plus two maps, not an array of levels and not one map.** A
+`std::map` costs a search for every price and an allocation for every new one.
+An array with a `Level` for every legal price costs a calculation, but it takes
+24 bytes for each price whether it is used or not, so memory grows with the
+band: about 2.4 MB for 100,000 prices and 24 MB for a million, and a very wide
+band could take gigabytes, which is why the band had to be small and known in
+advance. The window keeps the array for the prices where almost all the orders
+are, near the market, and the maps hold the rest. Memory depends on the window
+and not on the band: 1.6 MB for a default book, against
+2.4 MB for the array in v2.2.1, and creating one takes
+32 µs against 48 µs. No legal price is
+rejected for being far away.
+
+The costs are these. A far price takes a map search, and a new far price a map
+node. A window move costs per level, as described above, and the worst case,
+about 3 ms, is too slow for a latency-sensitive caller to ignore; it needs
+one side's half of the window full and a market that jumps past it.
+A level outside the window is slower to sweep than one inside it: in the
+benchmark's sweep of 64 levels, where half of the levels are outside, it takes
+1,986 ns against 1,083 ns. And the hot paths do a little more work to tell the
+window from the outside: `addOrder` is +6% and a
+`modifyOrder` that changes the price +13%. These are
+accepted, in exchange for the memory and for no longer rejecting prices.
 
 **An intrusive queue within a level.** The requirement is FIFO with O(1)
 removal from the middle — a cancel must not walk the level. A doubly linked
@@ -413,8 +519,10 @@ cancel time, which reads the node anyway.
 **Allocations per resting order.** None, normally: the order and its place in
 the queue come from the pool, and its lookup entry from the order table, which
 both allocate only when they need another chunk or page. A new price level
-allocates nothing either. An order that trades still allocates the `trades`
-vector in its `OrderResult`.
+inside the window allocates nothing either. A new price outside it takes a map
+node from the node pool, which asks the system for memory only when it has no
+free block, and so does a window move, once for each level that leaves. An
+order that trades still allocates the `trades` vector in its `OrderResult`.
 
 ---
 
@@ -824,6 +932,74 @@ one compares the ID with the size of an empty list and returns.
 The profile has not been repeated for this step. It will be, together with a
 comparison chart, once the price levels have been replaced as well.
 
+### Results: the price window
+
+The third engine change: the array with one level per legal price is replaced
+by the window and the two maps described under
+[Design](#core-data-structures). The API does not change. The behaviour does
+in one way, which is the point: a price far from the market is no longer
+rejected, and the default band grew from 100,000 prices to every positive
+`Price`. The tests that changed are the ones about the default band and about
+which prices are legal.
+
+The v2.2.1 engine and the new one were built next to each other and the full
+suite was run on each, back to back, on 2026-11-27. Both use the
+default band of each version: 100,000 prices for v2.2.1, every positive `Price`
+with a window of 65,536 for the new engine. A smaller window moves more often and
+sends more of a sweep through the maps; a larger one costs memory. Against 16,384 the
+default was measured to be faster in a sweep and in far orders, at four times
+the memory, and was chosen for that. The results are in
+[`results_v2-ring.json`](benchmarks/results_v2-ring.json). The drift, far, memory and creation
+rows come from a separate benchmark project, not in the repo yet; it joins the
+suite with [issue #22](https://github.com/wmarcos15/OrderBook/issues/22).
+
+| Operation | v2.2.1 engine | With the window | Change |
+|---|---|---|---|
+| `addOrder` | 40.5 ns | **42.8 ns** | +6% |
+| `cancelOrder` (hit) | 4.1 ns | **4.1 ns** | +1% |
+| `cancelOrder` (shuffled) | 39.5 ns | **43.3 ns** | +9% |
+| `modifyOrder` (friendly) | 4.8 ns | **4.5 ns** | −7% |
+| `modifyOrder` (unfriendly) | 10.8 ns | **12.1 ns** | +13% |
+| Sweep, 64 levels of one order | 1,083 ns | **1,986 ns** | +83% |
+| Price drifting across the band | 20.0 ns | **21.9 ns** | +10% |
+| Rest and cancel at a price far from the others | 9.2 ns | **13.4 ns** | +45% |
+| Memory of a default book | 2.4 MB | **1.6 MB** | −35% |
+| Creating a default book | 48 µs | **32 µs** | −34% |
+
+Two scenarios are new, because the old ones never leave the window. In the
+drift one, the market price walks across many more ticks than the window holds,
+with orders around it, so the window moves over and over and levels cross
+between it and the maps. In the far one, an order rests at a price outside the
+window and is cancelled, again and again, which is one map node each time. The
+last two rows are not time per operation: one is the memory a default book
+takes and the other what it takes to create one.
+
+**The accepted costs are on the hot paths.** `addOrder` and a `modifyOrder`
+that changes the price now have to tell whether the price is inside the window
+and whether the order is a new best near an edge, and that is the
++6% and +13% above. The
+cancel and the friendly modify do not do that, since they work from the node.
+
+**The sweeps across levels are the ones to read.** The sweep benchmark rests
+128,000 asks at consecutive prices, twice the window, and a sweep never moves
+the window, so half of the levels it eats are in a map. Each of those costs
+about 40 ns more than a level in the window, and every point of the curve is
+about 80% slower: one level of one order goes from 27.5 ns to 48.5 ns, 64
+levels from 1,083 ns to 1,986 ns. With a window larger than the ladder
+(262,144) the same sweeps take 28.9 ns and 1,178 ns, close to v2.2.1. The sweep
+of many orders at one level is unchanged.
+
+**A window move is not in the table above.** In the drift scenario it is part
+of the average. Its cost for a single move is in the
+[Design](#core-data-structures) section: about 1 µs for a typical book and
+2.9 ms when 32,768 levels leave at once. Those figures are current behaviour, and a faster tree for the
+outside would change them.
+
+One limit. The workload around the market is the same synthetic one as before,
+so it never leaves the window by itself, which is why the drift and far
+scenarios exist; real order flow would show how often moves happen, and that
+is [issue #22](https://github.com/wmarcos15/OrderBook/issues/22).
+
 ### Results: the O(1) `cancelOrder` change (September)
 
 This is the earlier experiment, kept as it was written. Its absolute figures
@@ -1037,11 +1213,13 @@ OrderBook/
 │       ├── order.hpp / .cpp
 │       ├── orderbook.hpp / .cpp
 │       ├── pool.hpp            # detail::Pool: chunked slot pool with ASan poisoning (header only)
-│       ├── order_queue.hpp     # detail::OrderNode, OrderQueue, LevelData: the intrusive level queue (header only)
+│       ├── order_queue.hpp     # detail::OrderNode, OrderQueue, LevelData, Level: the intrusive level queue (header only)
 │       ├── order_table.hpp     # detail::OrderTable: finds an order by its ID, in pages (header only)
 │       ├── bitmap.hpp          # detail::Bitmap: one bit per position, with a summary to skip gaps (header only)
 │       ├── side_index.hpp      # detail::SideIndex: which positions one side uses, and its best (header only)
-│       ├── ladder.hpp          # detail::Level, Ladder: one level per legal price (header only)
+│       ├── window.hpp          # detail::Window: the ring of levels around the market, with the side indexes (header only)
+│       ├── price_levels.hpp    # detail::PriceLevels: the window plus the two maps, and the window moves (header only)
+│       ├── node_pool.hpp       # detail::NodePool: the maps' nodes, in chunks that never move (header only)
 │       └── trade.hpp / .cpp    # Trade, OrderResult, printTrade(s)
 ├── tests/
 │   ├── CMakeLists.txt          # orderbook_tests, registered with ctest
@@ -1058,6 +1236,7 @@ OrderBook/
 │   ├── self_trade_test.cpp     # self-trade prevention
 │   ├── depth_test.cpp          # depth snapshot
 │   ├── price_band_test.cpp     # edges, ticks, illegal prices, the next best price, levels that change side
+│   ├── price_window_test.cpp   # far prices: levels in the maps, sweeps and depth across the window, band edges
 │   ├── moved_book_test.cpp     # a book that has been moved
 │   ├── allocation_test.cpp     # running out of memory, and calls that allocate nothing
 │   ├── random_test.cpp         # random runs against the reference book
@@ -1066,7 +1245,9 @@ OrderBook/
 │   ├── order_table_test.cpp    # the table: lookup, page edges, page reuse, growth, move
 │   ├── bitmap_test.cpp         # the bitmap: search both ways, word and summary edges
 │   ├── side_index_test.cpp     # one side: best, next worse, move
-│   └── ladder_test.cpp         # the ladder: prices and positions, totals, both sides, move
+│   ├── window_test.cpp         # the window: prices and positions, slots, totals, both sides, shifts
+│   ├── price_levels_test.cpp   # the window and the maps: routing, best and next over the chain, moves
+│   └── node_pool_test.cpp      # the node pool: chunk growth, reuse, failed allocations
 └── benchmarks/
     ├── CMakeLists.txt          # orderbook_benchmark, orderbook_profile
     ├── workload.hpp / .cpp     # seeded synthetic order flow
@@ -1083,6 +1264,7 @@ OrderBook/
     ├── results_v2-pool.json    # the order pool and intrusive queues
     ├── results_v2-map-rerun.json # the v2.0.0 engine re-run next to the pool run
     ├── results_v2-table.json   # the paged order table
+    ├── results_v2-ring.json    # the price window, next to the v2.2.1 engine
     ├── results_v2-pool-rerun.json # the v2.1.0 engine re-run next to the table run
     ├── results.json            # September, after the O(1) cancelOrder change
     ├── results_4b4fa81.json    # September, before it
@@ -1099,10 +1281,12 @@ OrderBook/
 
 ## Future work
 
-- **Prices without a band.** The ladder needs to know every legal price in
-  advance. A ring buffer would keep a window of levels around the current
-  price and move it as the price moves, so no price is rejected and a wide
-  range costs no memory.
+- **A faster tree outside the window.** The two maps are `std::map`s, and a
+  window move pays for each level that crosses
+  ([issue #38](https://github.com/wmarcos15/OrderBook/issues/38)).
+- **Negative prices.** Zero and below are illegal, because the window works on
+  positive ticks
+  ([issue #39](https://github.com/wmarcos15/OrderBook/issues/39)).
 - **Tail latency.** Google Benchmark reports aggregates across repetitions,
   not per-call percentiles. A p99 / p99.9 view would need per-iteration
   timing, which is a different harness.
