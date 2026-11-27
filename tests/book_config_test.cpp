@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <cstddef>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -37,6 +39,7 @@ TEST(BookConfigTest, Constructor_Default_UsesTheDefaultValues) {
     EXPECT_EQ(book.getBookConfig().tickSize, 1);
     EXPECT_EQ(book.getBookConfig().minPrice, 1);
     EXPECT_EQ(book.getBookConfig().maxPrice, 100'000);
+    EXPECT_EQ(book.getBookConfig().windowSize, 16'384u);
     expectEmptyBook(book);
 }
 
@@ -55,6 +58,46 @@ TEST(BookConfigTest, Constructor_OnePriceBand_Accepted) {
     OrderID id = book.addOrder(BUYER, OrderType::GTC, Side::buy, 100, 10).orderID;
 
     EXPECT_NE(book.getOrder(id), nullptr);
+}
+
+TEST(BookConfigTest, Constructor_PositionalConfig_UsesTheDefaultWindowSize) {
+    OrderBook book(BookConfig {5, 10, 200});
+
+    EXPECT_EQ(book.getBookConfig().maxPrice, 200);
+    EXPECT_EQ(book.getBookConfig().windowSize, 16'384u);
+}
+
+TEST(BookConfigTest, Constructor_WindowSizePowerOfTwo_StoresTheValue) {
+    for (std::size_t size : {1u, 2u, 64u, 16'384u, 1u << 20}) {
+        OrderBook book(BookConfig {.windowSize = size});
+
+        EXPECT_EQ(book.getBookConfig().windowSize, size);
+    }
+}
+
+TEST(BookConfigTest, Constructor_WindowSizeZero_ThrowsAndNamesTheRule) {
+    expectRejectedWith({.windowSize = 0}, "windowSize must be greater than 0");
+}
+
+TEST(BookConfigTest, Constructor_WindowSizeNotPowerOfTwo_ThrowsAndNamesTheNearest) {
+    expectRejectedWith({.windowSize = 3}, "windowSize (3) must be a power of two; the nearest are 2 and 4");
+    expectRejectedWith({.windowSize = 100}, "windowSize (100) must be a power of two; the nearest are 64 and 128");
+    expectRejectedWith(
+        {.windowSize = 10'000}, "windowSize (10000) must be a power of two; the nearest are 8192 and 16384");
+    expectRejectedWith(
+        {.windowSize = 16'383}, "windowSize (16383) must be a power of two; the nearest are 8192 and 16384");
+    expectRejectedWith(
+        {.windowSize = 16'385}, "windowSize (16385) must be a power of two; the nearest are 16384 and 32768");
+}
+
+TEST(BookConfigTest, Constructor_WindowSizeAboveTheLargestPowerOfTwo_NamesOnlyTheOneBelow) {
+    constexpr std::size_t LARGEST = std::numeric_limits<std::size_t>::max();
+    const std::string below = std::to_string(LARGEST / 2 + 1);
+
+    for (std::size_t size : {LARGEST / 2 + 2, LARGEST}) {
+        expectRejectedWith({.windowSize = size},
+            "windowSize (" + std::to_string(size) + ") must be a power of two; the nearest is " + below);
+    }
 }
 
 // With the band on the tick, so that only the check of the tick can reject it
