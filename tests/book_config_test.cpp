@@ -39,7 +39,7 @@ TEST(BookConfigTest, Constructor_Default_UsesTheDefaultValues) {
     EXPECT_EQ(book.getBookConfig().tickSize, 1);
     EXPECT_EQ(book.getBookConfig().minPrice, 1);
     EXPECT_EQ(book.getBookConfig().maxPrice, 2'147'483'647);
-    EXPECT_EQ(book.getBookConfig().windowSize, 16'384u);
+    EXPECT_EQ(book.getBookConfig().windowSize, 65'536u);
     expectEmptyBook(book);
 }
 
@@ -64,7 +64,7 @@ TEST(BookConfigTest, Constructor_PositionalConfig_UsesTheDefaultWindowSize) {
     OrderBook book(BookConfig {5, 10, 200});
 
     EXPECT_EQ(book.getBookConfig().maxPrice, 200);
-    EXPECT_EQ(book.getBookConfig().windowSize, 16'384u);
+    EXPECT_EQ(book.getBookConfig().windowSize, 65'536u);
 }
 
 TEST(BookConfigTest, Constructor_WindowSizePowerOfTwo_StoresTheValue) {
