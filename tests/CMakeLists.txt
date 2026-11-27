@@ -17,6 +17,7 @@ add_executable(orderbook_tests
     self_trade_test.cpp
     depth_test.cpp
     price_band_test.cpp
+    price_window_test.cpp
     moved_book_test.cpp
     random_test.cpp
     allocation_test.cpp

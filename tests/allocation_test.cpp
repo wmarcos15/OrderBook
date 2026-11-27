@@ -106,6 +106,10 @@ static std::size_t allocationsOf(Action action) {
 // The table has a page per 4096 IDs, so this ID needs a new one and the list to grow
 constexpr OrderID FIRST_OF_A_PAGE = 4'096;
 
+// Small windows, so that a few orders reach the levels outside them
+constexpr BookConfig WINDOW_OF_64 {1, 1, 100'000, SelfTradePolicy::cancelNewest, 64};
+constexpr BookConfig WINDOW_OF_256 {1, 1, 100'000, SelfTradePolicy::cancelNewest, 256};
+
 class AllocationTest : public SidedBookTest {
 protected:
     static constexpr OwnerID OWNER = 30;
@@ -290,6 +294,74 @@ TEST_P(AllocationTest, ModifyThatMovesAnOrderFar_Fails_OriginalStays) {
         BookConfig {1, 1, 100'000, SelfTradePolicy::cancelNewest, 64});
 }
 
+// The failures can only come from the move: the order itself lands inside the window, and the pool of the
+// map has no chunk yet, so the two allocations of the first one are the move's (see the one that allocates nothing)
+TEST_P(AllocationTest, OrderThatMovesTheWindow_Fails_NothingChanges) {
+    std::optional<Snapshot> before;
+    constexpr OrderID MOVING = 4;
+    failEachAllocation(
+        [&](OrderBook& book) {
+            send(book, OrderType::GTC, 50'000, 5);
+            send(book, OrderType::GTC, 49'990, 5);
+            send(book, OrderType::GTC, 49'980, 5);
+            before = snapshotOf(book);
+        },
+        [&](OrderBook& book) { send(book, OrderType::GTC, 50'028, 10); },
+        [&](const OrderBook& book) {
+            EXPECT_EQ(snapshotOf(book), before);
+            EXPECT_EQ(book.getOrder(MOVING), nullptr);
+        },
+        WINDOW_OF_64);
+}
+
+TEST_P(AllocationTest, OrderThatMovesTheWindowWithNothingLeaving_AllocatesNothing) {
+    OrderBook book(WINDOW_OF_64);
+    send(book, OrderType::GTC, 50'000, 5);
+
+    EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 50'028, 10); }), 0u);
+}
+
+// More levels leave than the first chunk of the pool holds, so the failures after it must undo the entries made
+TEST_P(AllocationTest, OrderThatMovesTheWindowAndPushesOutManyLevels_Fails_NothingChanges) {
+    constexpr OrderID LEAVING = 112;
+    static_assert(LEAVING > detail::NodePool::FIRST_CHUNK_BLOCKS);
+    std::optional<Snapshot> before;
+    constexpr OrderID MOVING = 122;
+    failEachAllocation(
+        [&](OrderBook& book) {
+            send(book, OrderType::GTC, 50'000, 5);
+            for (Price price {49'999}; price >= 49'880; --price)
+                send(book, OrderType::GTC, price, 1);
+            before = snapshotOf(book);
+        },
+        [&](OrderBook& book) { send(book, OrderType::GTC, 50'120, 10); },
+        [&](const OrderBook& book) {
+            EXPECT_EQ(snapshotOf(book), before);
+            EXPECT_EQ(book.getOrder(MOVING), nullptr);
+        },
+        WINDOW_OF_256);
+}
+
+TEST_P(AllocationTest, ModifyThatMovesTheWindow_Fails_OriginalStays) {
+    std::optional<Snapshot> before;
+    OrderID id {0};
+    constexpr OrderID REPLACEMENT = 4;
+    failEachAllocation(
+        [&](OrderBook& book) {
+            id = send(book, OrderType::GTC, 50'000, 5).orderID;
+            send(book, OrderType::GTC, 49'990, 5);
+            send(book, OrderType::GTC, 49'980, 5);
+            before = snapshotOf(book);
+        },
+        [&](OrderBook& book) { book.modifyOrder(id, at(50'028), 5); },
+        [&](const OrderBook& book) {
+            EXPECT_EQ(snapshotOf(book), before);
+            EXPECT_NE(book.getOrder(id), nullptr);
+            EXPECT_EQ(book.getOrder(REPLACEMENT), nullptr);
+        },
+        WINDOW_OF_64);
+}
+
 // With the original still there, its owner could trade more than was asked for
 TEST_P(AllocationTest, ModifyThatCrosses_Fails_OriginalStaysOnlyIfNothingWasTraded) {
     OrderID id {0};
@@ -353,6 +425,44 @@ TEST_P(AllocationTest, RestCancelAndModify_WithRoomInThePoolAndTable_AllocateNot
     EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 91, 10); }), 0u);
     EXPECT_EQ(allocationsOf([&] { book.modifyOrder(id, at(95), 10); }), 0u);
     EXPECT_EQ(allocationsOf([&] { book.cancelOrder(id + 1); }), 0u);
+}
+
+// The first level outside the window makes the first chunk of the pool of the map
+TEST_P(AllocationTest, OrderAtANewFarPrice_Allocates) {
+    OrderBook book(WINDOW_OF_64);
+    send(book, OrderType::GTC, 90, 5);
+
+    EXPECT_GT(allocationsOf([&] { send(book, OrderType::GTC, 20, 7); }), 0u);
+}
+
+TEST_P(AllocationTest, OrderAtAFarPriceThatExists_AllocatesNothing) {
+    OrderBook book(WINDOW_OF_64);
+    send(book, OrderType::GTC, 90, 5);
+    send(book, OrderType::GTC, 20, 5);
+
+    EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 20, 7); }), 0u);
+}
+
+// The nodes of the map come from the pool: a new price takes a free block, and a cancelled one gives it back
+TEST_P(AllocationTest, OrderAtANewFarPrice_WithRoomInTheMapPool_AllocatesNothing) {
+    OrderBook book(WINDOW_OF_64);
+    send(book, OrderType::GTC, 90, 5);
+    send(book, OrderType::GTC, 20, 5);
+
+    EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 30, 7); }), 0u);
+    book.cancelOrder(3);
+    EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 40, 7); }), 0u);
+}
+
+TEST_P(AllocationTest, RestInsideTheWindow_WithFarLevelsAround_AllocatesNothing) {
+    OrderBook book(WINDOW_OF_64);
+    send(book, OrderType::GTC, 90, 5);
+    send(book, OrderType::GTC, 20, 5);
+    send(book, OrderType::GTC, 10, 5);
+
+    // Not a best, and then a new best that is far from the edges, so the window stays
+    EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 80, 5); }), 0u);
+    EXPECT_EQ(allocationsOf([&] { send(book, OrderType::GTC, 95, 5); }), 0u);
 }
 
 // --------------------------
