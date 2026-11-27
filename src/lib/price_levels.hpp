@@ -137,14 +137,20 @@ public:
 
     // Called just before an order rests at price. Only a new best near the edge or outside moves the window,
     // so that it follows the market without moving for every order
-    void prepareFor(Side side, Price price) {
+    // Returns where the price is in the window afterwards, Window::NONE if outside, so that adding does not divide again
+    [[gnu::always_inline]] std::size_t prepareFor(Side side, Price price) {
+        std::size_t position = window_.positionOf(price);
         Cursor ownBest = bestOf(side);
-        if (ownBest.level != nullptr && (side == Side::buy ? price < ownBest.price : price > ownBest.price)) return;
+        if (ownBest.level != nullptr && (side == Side::buy ? price < ownBest.price : price > ownBest.price)) return position;
 
         std::size_t margin = window_.size() / 8;
-        std::size_t position = window_.positionOf(price);
-        if (position != Window::NONE && position >= margin && position < window_.size() - margin) return;
+        if (position != Window::NONE && position >= margin && position < window_.size() - margin) return position;
 
+        return followMarket(side, price, position);
+    }
+
+    // The rare part of prepareFor, kept out of line so that the rest can be inlined
+    [[gnu::noinline]] std::size_t followMarket(Side side, Price price, std::size_t position) {
         std::int64_t tickSize = window_.tickSize();
         std::int64_t centre = price / tickSize;
         Cursor otherBest = bestOf(side == Side::buy ? Side::sell : Side::buy);
@@ -153,7 +159,10 @@ public:
         std::int64_t size = static_cast<std::int64_t>(window_.size());
         std::int64_t newBase = minTick_;
         if (maxTick_ - minTick_ + 1 >= size) newBase = std::clamp(centre - size / 2, minTick_, maxTick_ - size + 1);
-        if (newBase != window_.baseTick()) moveTo(newBase);
+        if (newBase == window_.baseTick()) return position;
+
+        moveTo(newBase);
+        return window_.positionOf(price);
     }
 
     // The caller keeps the outside rule: no bid above the new window and no ask below it
@@ -218,12 +227,22 @@ public:
         return cursorAt(mapOf<side>(), mapOf<side>().upper_bound(cursor.price));
     }
 
+    // False for a moved-from one
+    bool hasSlots() const {
+        return window_.size() > 0;
+    }
+
     void add(OrderNode* node) {
+        add(node, window_.positionOf(node->order.getPrice()));
+    }
+
+    // The position is the one prepareFor returned
+    [[gnu::always_inline]] void add(OrderNode* node, std::size_t position) {
         assert(node != nullptr);
+        assert(position == window_.positionOf(node->order.getPrice()));
         Price price = node->order.getPrice();
         Side side = node->order.getSide();
 
-        std::size_t position = window_.positionOf(price);
         if (position != Window::NONE) {
             window_.add(position, node);
         } else {
@@ -238,7 +257,7 @@ public:
         Window::fill(node, quantity);
     }
 
-    void remove(OrderNode* node) {
+    [[gnu::always_inline]] void remove(OrderNode* node) {
         if (window_.holds(node)) {
             window_.remove(node);
         } else if (node->order.getSide() == Side::buy) {

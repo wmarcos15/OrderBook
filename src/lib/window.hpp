@@ -167,7 +167,7 @@ public:
         return index<side>().after(position);
     }
 
-    void add(std::size_t position, OrderNode* node) {
+    [[gnu::always_inline]] void add(std::size_t position, OrderNode* node) {
         assert(node != nullptr);
         assert(position == positionOf(node->order.getPrice()));
         Side side = node->order.getSide();
@@ -191,13 +191,18 @@ public:
         node->levelData->qty_ -= quantity;
     }
 
-    void remove(OrderNode* node) {
+    [[gnu::always_inline]] void remove(OrderNode* node) {
         node->level->unlink(node);
         --node->levelData->count_;
         node->levelData->qty_ -= node->order.getRemainingQuantity();
 
         if (!node->level->empty()) return;
-        removeFromIndex(node->order.getSide(), positionOf(node->order.getPrice()));
+        // Slots wrap around the ring, so the position comes from the slot without dividing
+        std::size_t offset = reinterpret_cast<const char*>(node->levelData) - reinterpret_cast<const char*>(&levels_.front().data);
+        std::int64_t slot = static_cast<std::int64_t>(offset / sizeof(Level));
+        std::size_t position = static_cast<std::size_t>(slot - base_) & (levels_.size() - 1);
+        assert(position == positionOf(node->order.getPrice()));
+        removeFromIndex(node->order.getSide(), position);
     }
 };
 

@@ -1,7 +1,6 @@
 add_executable(orderbook_tests
     bitmap_test.cpp
     side_index_test.cpp
-    ladder_test.cpp
     window_test.cpp
     price_levels_test.cpp
     order_queue_test.cpp

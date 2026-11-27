@@ -156,11 +156,11 @@ protected:
 
     // Runs the action on a new book for every allocation it makes, failing each in turn
     template<typename Prepare, typename Action, typename Check>
-    void failEachAllocation(Prepare prepare, Action action, Check check) {
+    void failEachAllocation(Prepare prepare, Action action, Check check, const BookConfig& config = {}) {
         std::size_t failures {0};
         for (std::size_t allocation {1}; ; ++allocation) {
             SCOPED_TRACE(::testing::Message() << "allocation " << allocation);
-            OrderBook book;
+            OrderBook book(config);
             prepare(book);
 
             if (!failsAt(allocation, [&] { action(book); })) break;
@@ -190,6 +190,24 @@ TEST_P(AllocationTest, AddOrderThatRests_Fails_NothingChanges) {
         },
         [&](OrderBook& book) { send(book, OrderType::GTC, 100, 10); },
         [&](const OrderBook& book) { EXPECT_EQ(snapshotOf(book), before); });
+}
+
+// Like the modify above: the order is not the best, so the window stays and the map takes it
+TEST_P(AllocationTest, AddOrderThatRestsFar_Fails_NothingChanges) {
+    std::optional<Snapshot> before;
+    constexpr OrderID FAR = 3;
+    failEachAllocation(
+        [&](OrderBook& book) {
+            send(book, OrderType::GTC, 90, 5);
+            send(book, OrderType::GTC, 80, 5);
+            before = snapshotOf(book);
+        },
+        [&](OrderBook& book) { send(book, OrderType::GTC, 20, 10); },
+        [&](const OrderBook& book) {
+            EXPECT_EQ(snapshotOf(book), before);
+            EXPECT_EQ(book.getOrder(FAR), nullptr);
+        },
+        BookConfig {1, 1, 100'000, SelfTradePolicy::cancelNewest, 64});
 }
 
 // The first order takes the first chunk of the pool and the first page
@@ -249,6 +267,27 @@ TEST_P(AllocationTest, ModifyThatMovesAnOrder_Fails_OriginalStays) {
             EXPECT_EQ(snapshotOf(book), before);
             EXPECT_NE(book.getOrder(id), nullptr);
         });
+}
+
+// A small window and a best inside it, so that the far price rests in the map. The slot and the page are warm,
+// so what fails is the entry of the map
+TEST_P(AllocationTest, ModifyThatMovesAnOrderFar_Fails_OriginalStays) {
+    std::optional<Snapshot> before;
+    OrderID id {0};
+    constexpr OrderID REPLACEMENT = 3;
+    failEachAllocation(
+        [&](OrderBook& book) {
+            send(book, OrderType::GTC, 90, 5);
+            id = send(book, OrderType::GTC, 80, 5).orderID;
+            before = snapshotOf(book);
+        },
+        [&](OrderBook& book) { book.modifyOrder(id, at(20), 5); },
+        [&](const OrderBook& book) {
+            EXPECT_EQ(snapshotOf(book), before);
+            EXPECT_NE(book.getOrder(id), nullptr);
+            EXPECT_EQ(book.getOrder(REPLACEMENT), nullptr);
+        },
+        BookConfig {1, 1, 100'000, SelfTradePolicy::cancelNewest, 64});
 }
 
 // With the original still there, its owner could trade more than was asked for

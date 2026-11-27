@@ -117,7 +117,7 @@ TYPED_TEST(MovedBookTest, Source_AddOrder_ThrowsLogicErrorAndRestsNothing) {
 
 TYPED_TEST(MovedBookTest, Source_IllegalPriceOrQuantity_StillThrowsInvalidArgument) {
     EXPECT_THROW(this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 0, 10), std::invalid_argument);
-    EXPECT_THROW(this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, 100'001, 10), std::invalid_argument);
+    EXPECT_THROW(this->source_.addOrder(BUYER, OrderType::GTC, Side::buy, -1, 10), std::invalid_argument);
     EXPECT_THROW(this->source_.addMarketOrder(BUYER, Side::buy, 0), std::invalid_argument);
 }
 

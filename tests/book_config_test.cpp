@@ -38,7 +38,7 @@ TEST(BookConfigTest, Constructor_Default_UsesTheDefaultValues) {
 
     EXPECT_EQ(book.getBookConfig().tickSize, 1);
     EXPECT_EQ(book.getBookConfig().minPrice, 1);
-    EXPECT_EQ(book.getBookConfig().maxPrice, 100'000);
+    EXPECT_EQ(book.getBookConfig().maxPrice, 2'147'483'647);
     EXPECT_EQ(book.getBookConfig().windowSize, 16'384u);
     expectEmptyBook(book);
 }
@@ -98,6 +98,14 @@ TEST(BookConfigTest, Constructor_WindowSizeAboveTheLargestPowerOfTwo_NamesOnlyTh
         expectRejectedWith({.windowSize = size},
             "windowSize (" + std::to_string(size) + ") must be a power of two; the nearest is " + below);
     }
+}
+
+// The default maxPrice is the largest Price, so it is rounded down to the tick
+TEST(BookConfigTest, Constructor_DefaultMaxPrice_RoundsDownToTheTick) {
+    EXPECT_EQ(OrderBook(BookConfig {.tickSize = 1}).getBookConfig().maxPrice, 2'147'483'647);
+    EXPECT_EQ(OrderBook(BookConfig {.tickSize = 5, .minPrice = 5}).getBookConfig().maxPrice, 2'147'483'645);
+    EXPECT_EQ(OrderBook(BookConfig {.tickSize = 7, .minPrice = 7}).getBookConfig().maxPrice, 2'147'483'646);
+    EXPECT_EQ(OrderBook(BookConfig {.tickSize = 1'000, .minPrice = 1'000}).getBookConfig().maxPrice, 2'147'483'000);
 }
 
 // With the band on the tick, so that only the check of the tick can reject it

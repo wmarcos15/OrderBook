@@ -264,7 +264,7 @@ public:
 };
 
 TEST(RandomTest, DefaultBandWithAClusterAndFarOutliers_MatchesTheReference) {
-    RandomRun run({BookConfig {}, 15, 400, 0, 12345});
+    RandomRun run({BookConfig {1, 1, 100'000}, 15, 400, 0, 12345});
 
     run.run();
 
@@ -295,7 +295,7 @@ TEST(RandomTest, BandOfAMillionPrices_MatchesTheReference) {
 }
 
 TEST(RandomTest, FewOwnersThatSelfTrade_MatchesTheReference) {
-    RandomRun run({BookConfig {}, 15, 400, OWNERS, 99});
+    RandomRun run({BookConfig {1, 1, 100'000}, 15, 400, OWNERS, 99});
 
     run.run();
 

@@ -89,7 +89,7 @@ protected:
     Side other_ {otherSide(side_)};
     OrderBook book_;
 
-    SidedBookTest() = default;
+    SidedBookTest() : book_(BookConfig {1, 1, 100'000}) {}
     explicit SidedBookTest(const BookConfig& config) : book_(config) {}
 
     Price at(Price price) const {
