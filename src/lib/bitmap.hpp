@@ -97,7 +97,8 @@ public:
 
     void dropFront(std::size_t n) noexcept {
         if (n == 0) return;
-        if (n >= positions_) {
+        // A moved-from bitmap keeps its size but has no words
+        if (n >= positions_ || words_.empty()) {
             std::fill(words_.begin(), words_.end(), 0);
             std::fill(summary_.begin(), summary_.end(), 0);
             return;
@@ -121,7 +122,8 @@ public:
 
     void dropBack(std::size_t n) noexcept {
         if (n == 0) return;
-        if (n >= positions_) {
+        // A moved-from bitmap keeps its size but has no words
+        if (n >= positions_ || words_.empty()) {
             std::fill(words_.begin(), words_.end(), 0);
             std::fill(summary_.begin(), summary_.end(), 0);
             return;
