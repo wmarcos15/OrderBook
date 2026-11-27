@@ -52,6 +52,32 @@ void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); 
 void operator delete(void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
 void operator delete[](void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
 
+// The aligned versions too: some standard libraries allocate through them (libstdc++'s memory pools)
+static void* allocateAligned(std::size_t size, std::align_val_t alignment) noexcept {
+    if (shouldFail()) return nullptr;
+    std::size_t align = static_cast<std::size_t>(alignment);
+    // aligned_alloc wants a multiple of the alignment
+    std::size_t rounded = (size == 0) ? align : (size + align - 1) / align * align;
+    return std::aligned_alloc(align, rounded);
+}
+
+static void* allocateAlignedOrThrow(std::size_t size, std::align_val_t alignment) {
+    void* memory = allocateAligned(size, alignment);
+    if (memory == nullptr) throw std::bad_alloc();
+    return memory;
+}
+
+void* operator new(std::size_t size, std::align_val_t alignment) { return allocateAlignedOrThrow(size, alignment); }
+void* operator new[](std::size_t size, std::align_val_t alignment) { return allocateAlignedOrThrow(size, alignment); }
+void* operator new(std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept { return allocateAligned(size, alignment); }
+void* operator new[](std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept { return allocateAligned(size, alignment); }
+void operator delete(void* memory, std::align_val_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::align_val_t) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t, std::align_val_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept { std::free(memory); }
+void operator delete(void* memory, std::align_val_t, const std::nothrow_t&) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::align_val_t, const std::nothrow_t&) noexcept { std::free(memory); }
+
 // Returns whether the allocation was reached, so whether it failed
 template<typename Action>
 static bool failsAt(std::size_t allocation, Action action) {
