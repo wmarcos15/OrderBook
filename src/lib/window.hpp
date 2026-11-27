@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace orderbook::detail {
@@ -63,8 +64,31 @@ public:
     Window(Window&&) = default;
     Window& operator=(Window&&) = default;
 
+    // Only while empty: the levels keep their slots, so nothing is allocated or moved
+    void placeAt(Price basePrice) {
+        assert(bids_.best() == NONE && asks_.best() == NONE);
+        base_ = baseTickOf(tickSize_, basePrice, levels_.size());
+    }
+
     std::size_t size() const {
         return levels_.size();
+    }
+
+    Price tickSize() const {
+        return tickSize_;
+    }
+
+    // Can pass the largest Price, unlike the prices
+    std::int64_t baseTick() const {
+        return base_;
+    }
+
+    // Tells the window from the outside without dividing, as the hot paths need
+    bool holds(const OrderNode* node) const {
+        if (levels_.empty()) return false;
+        const LevelData* data = node->levelData;
+        return std::greater_equal<const LevelData*>()(data, &levels_.front().data)
+            && std::less_equal<const LevelData*>()(data, &levels_.back().data);
     }
 
     Price basePrice() const {
