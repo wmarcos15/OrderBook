@@ -953,25 +953,29 @@ the memory, and was chosen for that. The results are in
 rows come from a separate benchmark project, not in the repo yet; it joins the
 suite with [issue #22](https://github.com/wmarcos15/OrderBook/issues/22).
 
-| Operation | v2.2.1 engine | With the window | Change |
-|---|---|---|---|
-| `addOrder` | 40.5 ns | **42.8 ns** | +6% |
-| `cancelOrder` (hit) | 4.1 ns | **4.1 ns** | +1% |
-| `cancelOrder` (shuffled) | 39.5 ns | **43.3 ns** | +9% |
-| `modifyOrder` (friendly) | 4.8 ns | **4.5 ns** | −7% |
-| `modifyOrder` (unfriendly) | 10.8 ns | **12.1 ns** | +13% |
-| Sweep, 64 levels of one order | 1,083 ns | **1,986 ns** | +83% |
-| Price drifting across the band | 20.0 ns | **21.9 ns** | +10% |
-| Rest and cancel at a price far from the others | 9.2 ns | **13.4 ns** | +45% |
-| Memory of a default book | 2.4 MB | **1.6 MB** | −35% |
-| Creating a default book | 48 µs | **32 µs** | −34% |
+| Operation | v2.2.1 engine | With the window | Change | All levels in the window |
+|---|---|---|---|---|
+| `addOrder` | 40.5 ns | **42.8 ns** | +6% | — |
+| `cancelOrder` (hit) | 4.1 ns | **4.1 ns** | +1% | — |
+| `cancelOrder` (shuffled) | 39.5 ns | **43.3 ns** | +9% | — |
+| `modifyOrder` (friendly) | 4.8 ns | **4.5 ns** | −7% | — |
+| `modifyOrder` (unfriendly) | 10.8 ns | **12.1 ns** | +13% | — |
+| Sweep, 1 level of one order | 27.5 ns | **48.5 ns** | +76% | 28.9 ns (+5%) |
+| Sweep, 64 levels of one order | 1,083 ns | **1,986 ns** | +83% | 1,178 ns (+9%) |
+| Price drifting across the band | 20.0 ns | **21.9 ns** | +10% | — |
+| Rest and cancel at a price far from the others | 9.2 ns | **13.4 ns** | +45% | — |
+| Memory of a default book | 2.4 MB | **1.6 MB** | −35% | — |
+| Creating a default book | 48 µs | **32 µs** | −34% | — |
 
 Two scenarios are new, because the old ones never leave the window. In the
 drift one, the market price walks across many more ticks than the window holds,
 with orders around it, so the window moves over and over and levels cross
 between it and the maps. In the far one, an order rests at a price outside the
 window and is cancelled, again and again, which is one map node each time. The
-last two rows are not time per operation: one is the memory a default book
+last column is the same build with a window of 262,144, larger than the 128,000
+prices the sweep benchmark rests, so that no level it sweeps is in a map; it is
+filled in only where the default window leaves levels outside. The last two
+rows are not time per operation: one is the memory a default book
 takes and the other what it takes to create one.
 
 **The accepted costs are on the hot paths.** `addOrder` and a `modifyOrder`
