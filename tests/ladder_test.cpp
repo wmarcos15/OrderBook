@@ -455,7 +455,6 @@ TEST_P(LadderTest, TickOfFive_OrdersLandInTheLevelOfTheirPosition) {
     if (side_ == Side::buy) std::reverse(expected.begin(), expected.end());
     EXPECT_EQ(walk(ladder, side_), expected);
 
-    // Removing has to find the position from the price
     for (OrderNode& node : nodes)
         ladder.remove(&node);
     EXPECT_EQ(bestAt(ladder, side_), NONE);

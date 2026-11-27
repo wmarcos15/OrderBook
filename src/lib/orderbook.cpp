@@ -22,7 +22,6 @@ static std::string nearestPowersOfTwo(std::size_t size) {
     return "the nearest are " + std::to_string(below) + " and " + std::to_string(below * 2);
 }
 
-// Runs before the ladder is built
 BookConfig OrderBook::validated(const BookConfig& config) {
     if (config.tickSize <= 0)
         throw std::invalid_argument("tickSize must be greater than 0");

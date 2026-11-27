@@ -9,8 +9,7 @@ using namespace orderbook;
 constexpr OwnerID MAKER = 1;
 constexpr OwnerID TAKER = 2;
 
-// Every repetition rests this many orders and its sweeps consume all of them,
-// so each point of the curves does the same amount of work.
+// Each repetition rests this many orders and sweeps them all, so every point does the same work
 constexpr std::int64_t RESTING_ORDERS = 128'000;
 constexpr std::int64_t MAX_SWEEP = 64;
 
@@ -18,10 +17,8 @@ constexpr Price FIRST_PRICE = 1'000;
 constexpr Price MAX_PRICE = 1'000'000; // the ladder needs more prices than the default band has
 constexpr Quantity ORDER_QTY = 100;
 
-// The book is never refilled inside the timed loop. The setup builds one long
-// ask ladder at consecutive prices, and each iteration sends a single buy that
-// sweeps exactly the next `levels` levels. The ladder is consumed from the
-// front, and the iteration count is pinned so that it never runs out.
+// One long ask ladder is built in the setup and never refilled: each iteration
+// sweeps the next `levels` levels, and the pinned iteration count keeps it from running out
 static void BM_MatchOrder_Sweep(benchmark::State& state) {
     const std::int64_t levels = state.range(0);
     const std::int64_t ordersPerLevel = state.range(1);

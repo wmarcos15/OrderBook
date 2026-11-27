@@ -44,7 +44,6 @@ public:
     OrderTable(OrderTable&&) = default;
     OrderTable& operator=(OrderTable&&) = default;
 
-    // Returns null for any ID that is not in the table
     OrderNode* find(OrderID id) const {
         if (indexOf(id) >= directory_.size()) return nullptr;
         const Entry& entry = directory_[indexOf(id)];

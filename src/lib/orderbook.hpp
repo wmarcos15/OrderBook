@@ -133,7 +133,7 @@ public:
     OrderBook(OrderBook&&) = default;
     OrderBook& operator=(OrderBook&& other) noexcept;
 
-    std::size_t size() const; // total order count
+    std::size_t size() const;
     const Order* getBestBid() const;
     const Order* getBestAsk() const;
     bool empty() const;

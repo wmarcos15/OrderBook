@@ -13,8 +13,7 @@ static void BM_CancelOrderMiss(benchmark::State& state) {
     OrderBook book;
     OrderID id {0};
     
-    // We change the ID so that the compiler doesn't inline the loop.
-    // It cannot be optmized because cancelOrder() returns void.
+    // Changing the ID stops the compiler from optimising the loop away: cancelOrder() returns void
     for (auto _ : state) {
         benchmark::DoNotOptimize(id);
         book.cancelOrder(id++);
@@ -37,10 +36,8 @@ static void BM_CancelOrderHit(benchmark::State& state) {
         book.addOrder(spec.owner, OrderType::GTC, Side::buy, spec.price, spec.qty);
     }
 
-    // OrderIDs start from 1, so we don't have to save the IDs
-    // since we already know the IDs go from 1 to WORKLOAD_SIZE
-    // We change the ID so that the compiler doesn't inline the loop.
-    // It cannot be optmized because cancelOrder() returns void.
+    // IDs go from 1 to WORKLOAD_SIZE, so they need not be saved
+    // Changing the ID stops the compiler from optimising the loop away: cancelOrder() returns void
     OrderID id {1};
     for (auto _ : state) {
         benchmark::DoNotOptimize(id);
@@ -72,8 +69,7 @@ static void BM_CancelOrderShuffled(benchmark::State& state) {
     std::mt19937 rng {SHUFFLE_SEED};
     std::shuffle(ids.begin(), ids.end(), rng);
 
-    // The iteration count is pinned to 100'000, well below the number of IDs,
-    // so the index never goes out of bounds.
+    // Iterations are pinned well below the number of IDs, so the index stays in bounds
     size_t i {0};
     for (auto _ : state) {
         benchmark::DoNotOptimize(i);

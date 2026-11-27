@@ -71,7 +71,7 @@ TEST(PoolTest, Allocate_PastOneChunk_AllAddressesDistinctAndValuesIntact) {
     for (int i = 0; i < 10; ++i) {
         objects.push_back(pool.allocate(i, i * 10));
         if (i == 4) {
-            // The second chunk now exists; the first one must not have moved.
+            // The first chunk must not have moved
             for (int j = 0; j < 4; ++j) {
                 EXPECT_EQ(objects[j]->a, j);
                 EXPECT_EQ(objects[j]->b, j * 10);
@@ -187,7 +187,7 @@ TEST(PoolTest, MoveConstructed_ObjectsStayIntactAndPoolWorks) {
     dest.release(extra);
     EXPECT_EQ(dest.size(), 5u);
 
-    // Objects born in the source can be released into the destination.
+    // Objects born in the source can be released into the destination
     for (Dummy* d : objects)
         dest.release(d);
     EXPECT_EQ(dest.size(), 0u);

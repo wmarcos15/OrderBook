@@ -256,7 +256,6 @@ TYPED_TEST(SideIndexTest, Edges_OneOfTwoInAWordRemoved_OtherIsStillFound) {
     index.remove(this->at(5'001, LARGE));
     this->expectHolds(index, {8'000, 5'000, 10}, LARGE);
 
-    // The word is empty now
     index.remove(this->at(5'000, LARGE));
     this->expectHolds(index, {8'000, 10}, LARGE);
 }
