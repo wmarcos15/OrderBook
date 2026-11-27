@@ -20,6 +20,7 @@ struct BookConfig {
     Price minPrice {1};
     Price maxPrice {100'000};
     SelfTradePolicy defaultSelfTradePolicy {SelfTradePolicy::cancelNewest};
+    std::size_t windowSize {16'384};
 };
 
 // One price level as getDepth reports it

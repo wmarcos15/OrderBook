@@ -5,11 +5,22 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <bit>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace orderbook {
+
+static std::string nearestPowersOfTwo(std::size_t size) {
+    std::size_t below = std::bit_floor(size);
+
+    // Doubling the largest power of two would wrap around
+    if (below > std::numeric_limits<std::size_t>::max() / 2)
+        return "the nearest is " + std::to_string(below);
+    return "the nearest are " + std::to_string(below) + " and " + std::to_string(below * 2);
+}
 
 // Runs before the ladder is built
 BookConfig OrderBook::validated(const BookConfig& config) {
@@ -29,6 +40,12 @@ BookConfig OrderBook::validated(const BookConfig& config) {
             "minPrice (" + std::to_string(config.minPrice) +
             ") must be a multiple of tickSize (" + std::to_string(config.tickSize) +
             "); set minPrice and maxPrice to multiples of the tick");
+    if (config.windowSize == 0)
+        throw std::invalid_argument("windowSize must be greater than 0");
+    if (!std::has_single_bit(config.windowSize))
+        throw std::invalid_argument(
+            "windowSize (" + std::to_string(config.windowSize) +
+            ") must be a power of two; " + nearestPowersOfTwo(config.windowSize));
 
     return config;
 }
