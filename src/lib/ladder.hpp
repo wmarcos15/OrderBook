@@ -10,11 +10,6 @@
 
 namespace orderbook::detail {
 
-struct Level {
-    OrderQueue queue;
-    LevelData data;
-};
-
 // Both sides share the levels: a price never holds buys and sells at once
 class Ladder {
 private:
