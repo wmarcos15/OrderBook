@@ -4,7 +4,9 @@
 
 #include <gtest/gtest.h>
 #include <cstddef>
+#include <functional>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -21,6 +23,25 @@ using IDs = std::vector<OrderID>;
 using Prices = std::vector<Price>;
 using Quantities = std::vector<Quantity>;
 using Levels = std::vector<std::tuple<Price, Quantity, std::size_t>>;
+
+// Fails unless the call throws std::invalid_argument with exactly this message
+inline void expectInvalidArgument(const std::function<void()>& call, const std::string& message) {
+    try {
+        call();
+        ADD_FAILURE() << "accepted, expected: " << message;
+    } catch (const std::invalid_argument& error) {
+        EXPECT_EQ(error.what(), message);
+    }
+}
+
+// The message for a price outside the band or off the tick
+inline std::string priceError(const OrderBook& book, Price price) {
+    const BookConfig& config = book.getBookConfig();
+
+    if (price < config.minPrice) return "price below minimum";
+    if (price > config.maxPrice) return "price above maximum";
+    return "price not on tick";
+}
 
 constexpr Side otherSide(Side side) {
     return (side == Side::buy) ? Side::sell : Side::buy;

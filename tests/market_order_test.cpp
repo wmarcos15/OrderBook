@@ -121,7 +121,7 @@ TEST_P(MarketOrderTest, OnlyItsOwnSideHasOrders_NoTradesAndBookUntouched) {
 // Rejected
 // --------------------------
 TEST_P(MarketOrderTest, QuantityOfZeroOnAnEmptyBook_ThrowsAndConsumesNoID) {
-    EXPECT_THROW(market(0), std::invalid_argument);
+    expectInvalidArgument([&] { market(0); }, "quantity must be greater than zero");
 
     EXPECT_EQ(rest(side_, 100, 50), 1u);
 }
@@ -130,7 +130,7 @@ TEST_P(MarketOrderTest, QuantityOfZeroWithOrdersToTake_ThrowsAndLeavesNoTrace) {
     OrderID resting = rest(other_, 100, 50);
     Snapshot before = snapshotOf(book_);
 
-    EXPECT_THROW(market(0), std::invalid_argument);
+    expectInvalidArgument([&] { market(0); }, "quantity must be greater than zero");
 
     EXPECT_EQ(snapshotOf(book_), before);
     EXPECT_EQ(rest(other_, 100, 50), resting + 1);

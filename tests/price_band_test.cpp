@@ -211,7 +211,7 @@ TEST_P(OnePriceBandTest, MarketOrder_TradesAtTheOnlyPrice) {
 
 TEST_P(OnePriceBandTest, PricesNextToIt_AreRejected) {
     for (Price price : {ONLY - 1, ONLY + 1})
-        EXPECT_THROW(add(OrderType::GTC, side_, price, 10), std::invalid_argument) << "price " << price;
+        expectInvalidArgument([&] { add(OrderType::GTC, side_, price, 10); }, priceError(book_, at(price)));
 }
 
 // --------------------------
@@ -243,6 +243,13 @@ TEST_P(TickTest, BothEdges_RestAndCancel) {
 
     book_.cancelOrder(id);
     book_.cancelOrder(otherID);
+
+    expectEmptyBook(book_);
+}
+
+TEST_P(TickTest, PriceOffTheTick_Rejected) {
+    for (Price price : {11, 14, 99})
+        expectInvalidArgument([&] { book_.addOrder(ownerOf(side_), OrderType::GTC, side_, price, 1); }, "price not on tick");
 
     expectEmptyBook(book_);
 }
@@ -309,8 +316,8 @@ TEST(LargestPriceTest, BandEndsAtTheLargestPrice_BothEdgesWork) {
     EXPECT_EQ(levelsOf(book, Side::buy), (Levels {{MAX_PRICE - 99, 6, 1}}));
     EXPECT_EQ(tradePrices(book.addMarketOrder(BUYER, Side::buy, 5).trades), (Prices {MAX_PRICE}));
     EXPECT_EQ(tradePrices(book.addMarketOrder(SELLER, Side::sell, 6).trades), (Prices {MAX_PRICE - 99}));
-    EXPECT_THROW(book.addOrder(BUYER, OrderType::GTC, Side::buy, MAX_PRICE - 100, 1), std::invalid_argument);
-    EXPECT_THROW(book.addOrder(BUYER, OrderType::GTC, Side::buy, LOWEST_PRICE, 1), std::invalid_argument);
+    expectInvalidArgument([&] { book.addOrder(BUYER, OrderType::GTC, Side::buy, MAX_PRICE - 100, 1); }, "price below minimum");
+    expectInvalidArgument([&] { book.addOrder(BUYER, OrderType::GTC, Side::buy, LOWEST_PRICE, 1); }, "price below minimum");
 }
 
 // --------------------------

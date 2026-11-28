@@ -128,7 +128,7 @@ TEST_P(AddOrderTest, QuantityOfZero_ThrowsAndLeavesNoTrace) {
     Snapshot before = snapshotOf(book_);
 
     for (OrderType type : {OrderType::GTC, OrderType::IOC, OrderType::FOK})
-        EXPECT_THROW(add(type, side_, 101, 0), std::invalid_argument);
+        expectInvalidArgument([&] { add(type, side_, 101, 0); }, "quantity must be greater than zero");
 
     EXPECT_EQ(snapshotOf(book_), before);
     EXPECT_EQ(rest(side_, 99, 10), 3u);
@@ -140,9 +140,8 @@ TEST_P(AddOrderTest, IllegalPrice_ThrowsAndLeavesNoTrace) {
     Snapshot before = snapshotOf(book_);
 
     for (OrderType type : {OrderType::GTC, OrderType::IOC, OrderType::FOK}) {
-        EXPECT_THROW(add(type, side_, 0, 10), std::invalid_argument);
-        EXPECT_THROW(add(type, side_, -1, 10), std::invalid_argument);
-        EXPECT_THROW(add(type, side_, 100'001, 10), std::invalid_argument);
+        for (Price price : {0, -1, 100'001})
+            expectInvalidArgument([&] { add(type, side_, price, 10); }, priceError(book_, at(price)));
     }
 
     EXPECT_EQ(snapshotOf(book_), before);
