@@ -100,12 +100,56 @@ TEST(BookConfigTest, Constructor_WindowSizeAboveTheLargestPowerOfTwo_NamesOnlyTh
     }
 }
 
+TEST(BookConfigTest, Constructor_WindowSizeAtTheLimit_AcceptedWithANarrowBand) {
+    // The window is cut to the band, so this takes a few slots
+    OrderBook book(BookConfig {.maxPrice = 100, .windowSize = 1u << 24});
+
+    EXPECT_EQ(book.getBookConfig().windowSize, 1u << 24);
+    expectEmptyBook(book);
+}
+
+// A narrow band: without the check the book takes a few slots, not gigabytes
+TEST(BookConfigTest, Constructor_WindowSizeAboveTheLimit_ThrowsAndNamesTheCost) {
+    constexpr std::size_t LARGEST = std::numeric_limits<std::size_t>::max() / 2 + 1;
+
+    for (std::size_t size : {std::size_t {1} << 25, LARGEST}) {
+        expectRejectedWith({.maxPrice = 100, .windowSize = size},
+            "windowSize (" + std::to_string(size) + ") is above the largest, 16777216; each slot takes 24 bytes");
+    }
+}
+
 // The default maxPrice is the largest Price, so it is rounded down to the tick
 TEST(BookConfigTest, Constructor_DefaultMaxPrice_RoundsDownToTheTick) {
     EXPECT_EQ(OrderBook(BookConfig {.tickSize = 1}).getBookConfig().maxPrice, 2'147'483'647);
     EXPECT_EQ(OrderBook(BookConfig {.tickSize = 5, .minPrice = 5}).getBookConfig().maxPrice, 2'147'483'645);
     EXPECT_EQ(OrderBook(BookConfig {.tickSize = 7, .minPrice = 7}).getBookConfig().maxPrice, 2'147'483'646);
     EXPECT_EQ(OrderBook(BookConfig {.tickSize = 1'000, .minPrice = 1'000}).getBookConfig().maxPrice, 2'147'483'000);
+}
+
+// The default minPrice is 1, so it is rounded up to the tick
+TEST(BookConfigTest, Constructor_DefaultMinPrice_RoundsUpToTheTick) {
+    BookConfig config = OrderBook(BookConfig {.tickSize = 7}).getBookConfig();
+
+    EXPECT_EQ(config.minPrice, 7);
+    EXPECT_EQ(config.maxPrice, 2'147'483'646);
+    EXPECT_EQ(OrderBook(BookConfig {.tickSize = 1}).getBookConfig().minPrice, 1);
+}
+
+// A minPrice of 1 set by hand cannot be told from the default
+TEST(BookConfigTest, Constructor_MinPriceOneSetByHand_RoundsUpToTheTick) {
+    EXPECT_EQ(OrderBook(BookConfig {.tickSize = 5, .minPrice = 1}).getBookConfig().minPrice, 5);
+}
+
+TEST(BookConfigTest, Constructor_MinPriceOtherThanOneNotOnTick_StillThrows) {
+    expectRejectedWith({.tickSize = 5, .minPrice = 3},
+        "minPrice (3) must be a multiple of tickSize (5); set minPrice and maxPrice to multiples of the tick");
+}
+
+TEST(BookConfigTest, AddOrder_TickAlone_AcceptsTheFirstTick) {
+    OrderBook book(BookConfig {.tickSize = 7});
+
+    EXPECT_NO_THROW(book.addOrder(BUYER, OrderType::GTC, Side::buy, 7, 10));
+    EXPECT_THROW(book.addOrder(BUYER, OrderType::GTC, Side::buy, 1, 10), std::invalid_argument);
 }
 
 // With the band on the tick, so that only the check of the tick can reject it
@@ -129,11 +173,6 @@ TEST(BookConfigTest, Constructor_BandNotOnTick_ThrowsAndNamesTheEdge) {
         "minPrice (7) must be a multiple of tickSize (5); set minPrice and maxPrice to multiples of the tick");
     expectRejectedWith({.tickSize = 5, .minPrice = 5, .maxPrice = 1'003},
         "maxPrice (1003) must be a multiple of tickSize (5); set minPrice and maxPrice to multiples of the tick");
-}
-
-// The default band starts at 1, so a book with another tick has to set the band too
-TEST(BookConfigTest, Constructor_OnlyTheTickChanged_Throws) {
-    expectRejected({.tickSize = 5});
 }
 
 // --------------------------

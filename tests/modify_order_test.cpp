@@ -55,8 +55,8 @@ TEST_P(ModifyOrderTest, QuantityOfZero_ThrowsAndLeavesTheOrderAlone) {
     OrderID id = rest(side_, 98, 100);
     Snapshot before = snapshotOf(book_);
 
-    EXPECT_THROW(modify(id, 98, 0), std::invalid_argument);
-    EXPECT_THROW(modify(id, 99, 0), std::invalid_argument);
+    expectInvalidArgument([&] { modify(id, 98, 0); }, "quantity must be greater than zero");
+    expectInvalidArgument([&] { modify(id, 99, 0); }, "quantity must be greater than zero");
 
     ASSERT_NE(book_.getOrder(id), nullptr);
     EXPECT_EQ(book_.getOrder(id)->getRemainingQuantity(), 100u);
@@ -68,7 +68,7 @@ TEST_P(ModifyOrderTest, IllegalPrice_ThrowsAndLeavesTheOrderAlone) {
     Snapshot before = snapshotOf(book_);
 
     for (Price price : {0, -1, 100'001})
-        EXPECT_THROW(modify(id, price, 100), std::invalid_argument) << "price " << price;
+        expectInvalidArgument([&] { modify(id, price, 100); }, priceError(book_, at(price)));
 
     ASSERT_NE(book_.getOrder(id), nullptr);
     EXPECT_EQ(book_.getOrder(id)->getPrice(), at(98));
@@ -78,8 +78,8 @@ TEST_P(ModifyOrderTest, IllegalPrice_ThrowsAndLeavesTheOrderAlone) {
 TEST_P(ModifyOrderTest, Rejected_ConsumesNoID) {
     OrderID id = rest(side_, 98, 100);
 
-    EXPECT_THROW(modify(id, 98, 0), std::invalid_argument);
-    EXPECT_THROW(modify(id, 0, 100), std::invalid_argument);
+    expectInvalidArgument([&] { modify(id, 98, 0); }, "quantity must be greater than zero");
+    expectInvalidArgument([&] { modify(id, 0, 100); }, priceError(book_, at(0)));
 
     EXPECT_EQ(rest(side_, 98, 100), id + 1);
 }

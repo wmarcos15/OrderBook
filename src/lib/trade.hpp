@@ -24,6 +24,6 @@ struct OrderResult {
 };
 
 void printTrade(const Trade& trade);
-void const printTrades(const Trades& trades);
+void printTrades(const Trades& trades);
 
 } // namespace orderbook

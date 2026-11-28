@@ -77,7 +77,7 @@ public:
             ASAN_UNPOISON_MEMORY_REGION(chunks_[i].get(), blocksInChunk(i) * blockSize_);
     }
 
-    void* allocate(std::size_t size, std::size_t alignment) {
+    void* allocate(std::size_t size, [[maybe_unused]] std::size_t alignment) {
         assert(alignment <= alignof(std::max_align_t));
         assert(blockSize_ == 0 || roundUp(size) == blockSize_);
         // Set only once a chunk exists, so that a failed first request changes nothing
@@ -127,12 +127,12 @@ public:
     template<typename U>
     NodeAllocator(const NodeAllocator<U>& other) : pool_(other.pool_) {}
 
-    T* allocate(std::size_t n) {
+    T* allocate([[maybe_unused]] std::size_t n) {
         assert(n == 1);
         return static_cast<T*>(pool_->allocate(sizeof(T), alignof(T)));
     }
 
-    void deallocate(T* block, std::size_t n) {
+    void deallocate(T* block, [[maybe_unused]] std::size_t n) {
         assert(n == 1);
         pool_->deallocate(block);
     }

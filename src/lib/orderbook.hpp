@@ -50,8 +50,8 @@ private:
 
     [[noreturn]] void rejectPrice(Price price) const;
 
-    bool isLegal(Price price) const;
-    void requireLegal(Price price) const;
+    inline bool isLegal(Price price) const;
+    inline void requireLegal(Price price) const;
 
     template<Side opposite>
     static bool isBeyond(Price price, Price limit) {
@@ -61,21 +61,21 @@ private:
 
     OrderResult addAt(OwnerID owner, OrderType type, Side side, Price price, Quantity qty);
 
-    bool match(Order& incoming, Price limit, OrderResult& result);
+    inline bool match(Order& incoming, Price limit, OrderResult& result);
     bool matchTop(Order& incoming, const detail::PriceLevels::Cursor& best, OrderResult& result);
     bool canFullyFill(const Order& order, Price limit, OrderResult& result) const;
 
     // Gives the order a slot and an entry in the table. If it throws, nothing has changed.
-    detail::OrderNode* store(const Order& order);
+    inline detail::OrderNode* store(const Order& order);
 
     // Undoes store
-    void unstore(detail::OrderNode* node);
+    inline void unstore(detail::OrderNode* node);
 
     // Puts the order in the book. If it throws, nothing has changed.
-    void rest(const Order& order);
+    inline void rest(const Order& order);
 
     // Takes a resting order out of the book. The node is dead after this.
-    void removeNode(detail::OrderNode* node);
+    inline void removeNode(detail::OrderNode* node);
 
     std::unordered_map<OwnerID, SelfTradePolicy> policies_;
 

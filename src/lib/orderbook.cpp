@@ -13,6 +13,10 @@
 
 namespace orderbook {
 
+// 400 MB of window
+static constexpr std::size_t MAX_WINDOW_SIZE = std::size_t {1} << 24;
+static constexpr std::size_t SLOT_BYTES = sizeof(detail::Level);
+
 static std::string nearestPowersOfTwo(std::size_t size) {
     std::size_t below = std::bit_floor(size);
 
@@ -26,9 +30,11 @@ BookConfig OrderBook::validated(BookConfig config) {
     if (config.tickSize <= 0)
         throw std::invalid_argument("tickSize must be greater than 0");
 
-    // The default is the largest Price, which is rarely on the tick
+    // The defaults are the edges of the Price range, which are rarely on the tick
     if (config.maxPrice == std::numeric_limits<Price>::max())
         config.maxPrice -= config.maxPrice % config.tickSize;
+    if (config.minPrice == 1)
+        config.minPrice = config.tickSize;
 
     if (config.minPrice <= 0)
         throw std::invalid_argument("minPrice must be greater than 0");
@@ -50,6 +56,11 @@ BookConfig OrderBook::validated(BookConfig config) {
         throw std::invalid_argument(
             "windowSize (" + std::to_string(config.windowSize) +
             ") must be a power of two; " + nearestPowersOfTwo(config.windowSize));
+    if (config.windowSize > MAX_WINDOW_SIZE)
+        throw std::invalid_argument(
+            "windowSize (" + std::to_string(config.windowSize) +
+            ") is above the largest, " + std::to_string(MAX_WINDOW_SIZE) +
+            "; each slot takes " + std::to_string(SLOT_BYTES) + " bytes");
 
     return config;
 }
