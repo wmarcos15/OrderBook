@@ -25,7 +25,7 @@ private:
     SideIndex<Side::buy> bids_;
     SideIndex<Side::sell> asks_;
 
-    static std::int64_t baseTickOf(Price tickSize, Price basePrice, std::size_t size) {
+    static std::int64_t baseTickOf(Price tickSize, Price basePrice, [[maybe_unused]] std::size_t size) {
         assert(tickSize > 0);
         assert(basePrice > 0 && basePrice % tickSize == 0);
         assert(std::has_single_bit(size));

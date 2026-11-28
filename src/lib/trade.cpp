@@ -12,7 +12,7 @@ void printTrade(const Trade& trade) {
         << " units traded";
 }
 
-void const printTrades(const Trades& trades) {
+void printTrades(const Trades& trades) {
     for (const auto& t : trades) {
         printTrade(t);
         std::cout << '\n';

@@ -240,7 +240,7 @@ public:
     [[gnu::always_inline]] void add(OrderNode* node, std::size_t position) {
         assert(node != nullptr);
         assert(position == window_.positionOf(node->order.getPrice()));
-        Price price = node->order.getPrice();
+        [[maybe_unused]] Price price = node->order.getPrice();
         Side side = node->order.getSide();
 
         if (position != Window::NONE) {
