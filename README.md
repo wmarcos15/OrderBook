@@ -129,7 +129,9 @@ book.cancelOrder(bid.orderID);
 
 A book can also be created with a `BookConfig` that restricts which prices
 are legal. Every field has a default (tick 1, band 1 to 2,147,483,647, a
-window of 65,536 prices), so `OrderBook book;` above uses those:
+window of 65,536 prices), so `OrderBook book;` above uses those. A tick can be
+set on its own: `BookConfig{.tickSize = 7}` gives a band from 7 to the largest
+multiple of 7:
 
 ```cpp
 // Prices must be multiples of 5 between 9 000 and 11 000 (edges included).
@@ -144,12 +146,20 @@ book.getBookConfig().tickSize;   // 5
 
 The window is the part of the band the book keeps in an array. It does not
 limit which prices are legal, only how the book stores them, and the size must
-be a power of two:
+be a power of two, at most 2^24 (16,777,216). Each slot takes 24 bytes, so the
+default window takes 1.6 MB and the largest one 400 MB:
 
 ```cpp
 // A smaller window takes less memory, and moves more often.
 OrderBook small(BookConfig{.windowSize = 4'096});
 ```
+
+The edges of the `Price` range mean "to the edge": a `minPrice` of 1 is rounded
+up to the tick and a `maxPrice` of the largest `Price` is rounded down to it,
+whether they are the defaults or set by hand. Any other edge is checked as it
+is. `getBookConfig()` returns the config as given, after that rounding. Its
+`windowSize` is the size asked for: a band narrower than the window uses fewer
+slots.
 
 Self-trade prevention is on by default. The policy comes from
 `BookConfig::defaultSelfTradePolicy` (`cancelNewest` unless set otherwise)
@@ -219,9 +229,10 @@ Semantics worth knowing:
 - The `OrderBook` constructor throws `std::invalid_argument` if the config is
   inconsistent: `tickSize` or `minPrice` not positive, `minPrice` above
   `maxPrice`, either band edge not a multiple of `tickSize`, or a `windowSize`
-  that is zero or not a power of two (the message names the nearest powers of
-  two). A `maxPrice` left at its default is the largest `Price`, rounded down
-  to the tick; one set by hand is checked as it is. `modifyOrder` returns `std::nullopt` for an unknown ID.
+  that is zero, not a power of two (the message names the nearest powers of
+  two) or above 2^24. A `minPrice` of 1 is rounded up to the tick and a
+  `maxPrice` of the largest `Price` is rounded down to it, default or not;
+  any other edge is checked as it is. `modifyOrder` returns `std::nullopt` for an unknown ID.
   `cancelOrder` on an unknown ID is a silent no-op.
 - A market order is converted internally to an `IOC` limit order at the edge
   of the price band, so it sweeps everything available and discards any
